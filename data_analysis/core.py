@@ -8,7 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google.colab import files
-
+from scipy.stats import chi2_contingency
 
 
 class DataInspector:
@@ -380,13 +380,68 @@ class DataInspector:
         """
         if self.df is None: return
         
-        if self.normalized_data_df is None:
-            inspector.create_normalized_data_df() 
-        corr = self.normalized_data_df.corr()
+        numerical_df = df.select_dtypes(exclude=[np.number])
+        corr = numerical_df.corr()
         fig = px.imshow(corr, text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r',
                         title="Pearson Correlation Heatmap")
         fig.show()
 
+    def cramers_v_matrix(self):
+        """
+        Calculates the Cramér's V association matrix for all categorical columns.
+        Returns a pandas DataFrame representing the pairwise association matrix.
+        """
+        if self.df is None: 
+            print("⚠️ Empty DataFrame.")
+            return 
+        # 1. Isolate categorical columns
+        cat_df = self.df.select_dtypes(exclude=[np.number])
+        
+        if cat_df.empty:
+            print("⚠️ No categorical columns found in the DataFrame.")
+            return pd.DataFrame()
+            
+        cols = cat_df.columns
+        n_cols = len(cols)
+        
+        # 2. Initialize an empty matrix
+        corr_matrix = pd.DataFrame(np.zeros((n_cols, n_cols)), index=cols, columns=cols)
+        
+        # 3. Compute pairwise Cramér's V
+        for i in range(n_cols):
+            for j in range(i, n_cols):
+                col1 = cols[i]
+                col2 = cols[j]
+                
+                # Diagonal is always perfectly associated
+                if i == j:
+                    corr_matrix.loc[col1, col2] = 1.0
+                    continue
+                    
+                # Build contingency table
+                confusion_matrix = pd.crosstab(cat_df[col1], cat_df[col2])
+                
+                # If a column is constant or has no data, skip to avoid division by zero
+                if confusion_matrix.size == 0 or min(confusion_matrix.shape) <= 1:
+                    corr_matrix.loc[col1, col2] = 0.0
+                    corr_matrix.loc[col2, col1] = 0.0
+                    continue
+                    
+                # Compute Chi-Square statistic
+                chi2 = chi2_contingency(confusion_matrix)[0]
+                n = confusion_matrix.sum().sum()
+                
+                # Cramér's V formula
+                if n > 0:
+                    v = np.sqrt(chi2 / (n * (min(confusion_matrix.shape) - 1)))
+                else:
+                    v = 0.0
+                    
+                # Matrix is symmetric, so we mirror the results
+                corr_matrix.loc[col1, col2] = v
+                corr_matrix.loc[col2, col1] = v
+                
+        return corr_matrix
 
 import time
 from datetime import datetime
