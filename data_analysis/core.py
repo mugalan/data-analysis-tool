@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google.colab import files
 from scipy.stats import chi2_contingency, pointbiserialr, f_oneway
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, MinMaxScaler
 
 
 
@@ -209,10 +210,16 @@ class DataInspector:
         self.categorical_df = self.df.select_dtypes(exclude=[np.number])
         return self.categorical_df
 
-    def extract_normalized_categorical_data(self):
+    def extract_normalized_categorical_data(self, method='uniform'):
         """
-        Extracts categorical columns and maps values to a uniform range [0, 1].
-        Example: 3 categories become [0.0, 0.5, 1.0].
+        Extracts categorical columns and applies the specified encoding method.
+        
+        Parameters:
+        - method: str, options are:
+          * 'uniform': Maps categories to numeric codes scaled to the [0, 1] range.
+          * 'ordinal': Converts categories to distinct integers (0, 1, 2...) using OrdinalEncoder.
+          * 'onehot': Converts categories to multiple binary (0 or 1) columns using OneHotEncoder.
+          * 'minmax_ordinal': First encodes ordinally, then scales to exactly [0, 1] using MinMaxScaler.
         """
         if self.df is None: return print("Error: No data loaded.")
 
@@ -220,20 +227,54 @@ class DataInspector:
         cat_df = self.df.select_dtypes(exclude=[np.number]).copy()
 
         if cat_df.empty:
-            return print("⚠️ No categorical columns found to transform.")
+            print("⚠️ No categorical columns found to transform.")
+            self.categorical_normalized_df = pd.DataFrame()
+            return self.categorical_normalized_df
 
-        for col in cat_df.columns:
-            # Convert to category codes (0, 1, 2...)
-            codes = cat_df[col].astype('category').cat.codes
-            max_code = codes.max()
+        method_lower = method.lower().strip()
 
-            # Normalize to [0, 1] range
-            if max_code > 0:
-                cat_df[col] = codes / max_code
-            else:
-                cat_df[col] = 0.0  # Handle columns with only one unique value
-        self.categorical_normalized_df = cat_df
-        return self.categorical_normalized_df      
+        # --- Option 1: Original Uniform Mapping ---
+        if method_lower == 'uniform':
+            for col in cat_df.columns:
+                codes = cat_df[col].astype('category').cat.codes
+                max_code = codes.max()
+                if max_code > 0:
+                    cat_df[col] = codes / max_code
+                else:
+                    cat_df[col] = 0.0
+            self.categorical_normalized_df = cat_df
+
+        # --- Option 2: Ordinal Encoding (Distinct integers 0, 1, 2...) ---
+        elif method_lower == 'ordinal':
+            encoder = OrdinalEncoder()
+            # Fills NaNs temporarily to avoid encoder errors
+            cat_df_filled = cat_df.fillna("Missing")
+            encoded_data = encoder.fit_transform(cat_df_filled)
+            self.categorical_normalized_df = pd.DataFrame(encoded_data, columns=cat_df.columns, index=cat_df.index)
+
+        # --- Option 3: One-Hot Encoding (Binary Columns) ---
+        elif method_lower == 'onehot':
+            encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+            cat_df_filled = cat_df.fillna("Missing")
+            encoded_data = encoder.fit_transform(cat_df_filled)
+            feature_names = encoder.get_feature_names_out(cat_df.columns)
+            self.categorical_normalized_df = pd.DataFrame(encoded_data, columns=feature_names, index=cat_df.index)
+
+        # --- Option 4: Ordinal followed by MinMaxScaler [0, 1] ---
+        elif method_lower == 'minmax_ordinal':
+            encoder = OrdinalEncoder()
+            scaler = MinMaxScaler()
+            cat_df_filled = cat_df.fillna("Missing")
+            encoded_data = encoder.fit_transform(cat_df_filled)
+            scaled_data = scaler.fit_transform(encoded_data)
+            self.categorical_normalized_df = pd.DataFrame(scaled_data, columns=cat_df.columns, index=cat_df.index)
+
+        else:
+            print(f"❌ Unknown method '{method}'. Defaulting to 'uniform'.")
+            return self.extract_normalized_categorical_data(method='uniform')
+
+        print(f"✨ Successfully encoded categorical data using the '{method_lower}' method.")
+        return self.categorical_normalized_df     
 
     def create_normalized_data_df(self):
         """
