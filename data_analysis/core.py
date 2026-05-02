@@ -380,7 +380,7 @@ class DataInspector:
         """
         if self.df is None: return
         
-        numerical_df = self.df.select_dtypes(exclude=[np.number])
+        numerical_df = self.df.select_dtypes(include=[np.number])
         corr = numerical_df.corr()
         fig = px.imshow(corr, text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r',
                         title="Pearson Correlation Heatmap")
@@ -442,7 +442,7 @@ class DataInspector:
                 corr_matrix,
                 text_auto=".2f",
                 aspect="auto",
-                color_continuous_scale="viridis",
+                color_continuous_scale="RdBu_r",
                 title="<b>Cramér's V Categorical Association Heatmap</b>",
                 labels=dict(color="Cramér's V")
             )
