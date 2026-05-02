@@ -442,7 +442,7 @@ class DataInspector:
                 corr_matrix,
                 text_auto=".2f",
                 aspect="auto",
-                color_continuous_scale="Purples",
+                color_continuous_scale="viridis",
                 title="<b>Cramér's V Categorical Association Heatmap</b>",
                 labels=dict(color="Cramér's V")
             )
