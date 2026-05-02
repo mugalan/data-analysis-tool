@@ -8,7 +8,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google.colab import files
-from scipy.stats import chi2_contingency
+from scipy.stats import chi2_contingency, pointbiserialr, f_oneway
+
 
 
 class DataInspector:
@@ -456,6 +457,79 @@ class DataInspector:
             
             fig.show()
             return corr_matrix
+
+    def correlate_num_to_cat(self):
+        """
+        Computes associations between all numeric and categorical columns.
+        - Uses Point-Biserial correlation for binary categories (-1 to 1).
+        - Uses Eta (from ANOVA) for multi-class categories (0 to 1).
+        """
+        num_cols = self.df.select_dtypes(include=[np.number]).columns
+        cat_cols = self.df.select_dtypes(exclude=[np.number]).columns
+
+        if len(num_cols) == 0 or len(cat_cols) == 0:
+            print("⚠️ Requires both numerical and categorical columns.")
+            return pd.DataFrame()
+
+        results = []
+
+        for cat in cat_cols:
+            for num in num_cols:
+                # Drop missing values for this specific pair
+                valid_data = self.df[[cat, num]].dropna()
+                if valid_data.empty: continue
+                
+                categories = valid_data[cat].unique()
+                if len(categories) < 2:
+                    continue  # Skip columns with only 1 unique value
+
+                # --- Case 1: Point-Biserial Correlation for Binary categories ---
+                if len(categories) == 2:
+                    # Convert text categories to 0 and 1
+                    binary_cat = pd.get_dummies(valid_data[cat], drop_first=True).iloc[:, 0]
+                    corr, p_val = pointbiserialr(binary_cat, valid_data[num])
+                    results.append({
+                        'Categorical': cat,
+                        'Numerical': num,
+                        'Type': 'Point-Biserial (Binary)',
+                        'Correlation': round(corr, 3),
+                        'P-Value': round(p_val, 4)
+                    })
+
+                # --- Case 2: Eta from One-way ANOVA for Multi-class categories ---
+                else:
+                    groups = [valid_data[valid_data[cat] == val][num] for val in categories]
+                    # Filter out any empty groups
+                    groups = [g for g in groups if len(g) > 0]
+                    
+                    if len(groups) > 1:
+                        # Run One-Way ANOVA
+                        f_val, p_val = f_oneway(*groups)
+                        
+                        # Calculate Eta-Squared: SS_between / SS_total
+                        grand_mean = valid_data[num].mean()
+                        ss_total = ((valid_data[num] - grand_mean) ** 2).sum()
+                        
+                        ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for g in groups)
+                        
+                        if ss_total > 0:
+                            eta_sq = ss_between / ss_total
+                            eta = np.sqrt(eta_sq)  # Strength of the association [0 to 1]
+                        else:
+                            eta = 0.0
+
+                        results.append({
+                            'Categorical': cat,
+                            'Numerical': num,
+                            'Type': "Eta (Multi-class ANOVA)",
+                            'Correlation': round(eta, 3),
+                            'P-Value': round(p_val, 4)
+                        })
+
+        # Convert the results to a clean summary DataFrame
+        summary_df = pd.DataFrame(results)
+        return summary_df
+
 
 import time
 from datetime import datetime
