@@ -1603,3 +1603,15 @@ class PlottingMethods:
             response = {'status': 'error', 'response': {'meta_data': message_dict, 'data': json.dumps({'figure': ''}), 'message':message}}
 
         return response
+
+    def display_image(self, result):
+        if result['status'] == 'success':
+            # Parse the JSON response
+            response_data = json.loads(result['response']['data'])
+            plot_html = response_data['figure']
+
+            # 3. Render the HTML in the Colab output
+            display(HTML(plot_html))
+        else:
+            # Handle the error message if the plot failed
+            print(f"Failed to plot: {result['response']['message']}")           
