@@ -9,7 +9,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google.colab import files
 from scipy.stats import chi2_contingency, pointbiserialr, f_oneway
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, MinMaxScaler
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, RobustScaler
+
 
 
 
@@ -25,6 +26,7 @@ class DataInspector:
         self.categorical_df = None
         self.categorical_normalized_df = None
         self.normalized_data_df = None
+        self.numeric_normalized_df = None
 
     def upload_data(self):
         """
@@ -209,6 +211,61 @@ class DataInspector:
 
         self.categorical_df = self.df.select_dtypes(exclude=[np.number])
         return self.categorical_df
+
+    def extract_normalized_numeric_data(self, method='minmax'):
+        """
+        Extracts numerical columns and scales them using the specified method.
+
+        Parameters:
+        - method: str, options are:
+          * 'minmax': Scales features exactly to the [0, 1] range. 
+                      Best for algorithms that assume a bounded range (e.g., Neural Networks).
+          * 'standard': Centers features to a mean of 0 and standard deviation of 1.
+                        Standard choice for PCA, Clustering, and Linear models.
+          * 'robust': Uses the median and Interquartile Range (IQR). 
+                      Best if your data has outliers that you don't want distorting the scaling.
+        """
+        if self.df is None: return print("Error: No data loaded.")
+
+        # Select only numerical columns
+        num_df = self.df.select_dtypes(include=[np.number]).copy()
+
+        if num_df.empty:
+            print("⚠️ No numerical columns found to scale.")
+            self.numeric_normalized_df = pd.DataFrame()
+            return self.numeric_normalized_df
+
+        # Handle any missing values before scaling (fills with median if not handled yet)
+        if num_df.isnull().any().any():
+            print("ℹ️ Missing values detected. Imputing with column medians before scaling...")
+            num_df = num_df.fillna(num_df.median())
+
+        method_lower = method.lower().strip()
+
+        # --- Option 1: Min-Max Scaling [0, 1] ---
+        if method_lower == 'minmax':
+            scaler = MinMaxScaler()
+            scaled_data = scaler.fit_transform(num_df)
+            self.numeric_normalized_df = pd.DataFrame(scaled_data, columns=num_df.columns, index=num_df.index)
+
+        # --- Option 2: Standard Scaling (Z-score normalization) ---
+        elif method_lower == 'standard':
+            scaler = StandardScaler()
+            scaled_data = scaler.fit_transform(num_df)
+            self.numeric_normalized_df = pd.DataFrame(scaled_data, columns=num_df.columns, index=num_df.index)
+
+        # --- Option 3: Robust Scaling (Handles Outliers gracefully) ---
+        elif method_lower == 'robust':
+            scaler = RobustScaler()
+            scaled_data = scaler.fit_transform(num_df)
+            self.numeric_normalized_df = pd.DataFrame(scaled_data, columns=num_df.columns, index=num_df.index)
+
+        else:
+            print(f"❌ Unknown scaling method '{method}'. Defaulting to 'minmax'.")
+            return self.extract_normalized_numeric_data(method='minmax')
+
+        print(f"✨ Successfully scaled numerical data using the '{method_lower}' method.")
+        return self.numeric_normalized_df
 
     def extract_normalized_categorical_data(self, method='uniform'):
         """
