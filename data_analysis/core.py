@@ -530,7 +530,98 @@ class DataInspector:
         summary_df = pd.DataFrame(results)
         return summary_df
 
-
+    def plot_all_associations_heatmap(self):
+            """
+            Creates a unified association matrix for BOTH categorical and numeric data
+            and displays it as a single interactive Plotly Heatmap.
+            """
+            if self.df is None: return print("Error: No data loaded.")
+            
+            cols = self.df.columns
+            n_cols = len(cols)
+            
+            # 1. Initialize empty matrix
+            assoc_matrix = pd.DataFrame(np.zeros((n_cols, n_cols)), index=cols, columns=cols)
+            
+            # 2. Iterate through every pair of columns
+            for i in range(n_cols):
+                for j in range(i, n_cols):
+                    col1 = cols[i]
+                    col2 = cols[j]
+                    
+                    # Diagonal is always perfectly associated
+                    if i == j:
+                        assoc_matrix.loc[col1, col2] = 1.0
+                        continue
+                    
+                    # Drop rows with NaNs just for this pair
+                    valid_data = self.df[[col1, col2]].dropna()
+                    if valid_data.empty:
+                        continue
+                    
+                    is_num1 = pd.api.types.is_numeric_dtype(valid_data[col1])
+                    is_num2 = pd.api.types.is_numeric_dtype(valid_data[col2])
+                    
+                    # --- Case A: Numeric vs. Numeric (Pearson's r) ---
+                    if is_num1 and is_num2:
+                        val = valid_data[col1].corr(valid_data[col2], method='pearson')
+                        val = abs(val)  # Absolute value to keep heatmap on a 0 to 1 scale
+                        
+                    # --- Case B: Categorical vs. Categorical (Cramér's V) ---
+                    elif not is_num1 and not is_num2:
+                        confusion_matrix = pd.crosstab(valid_data[col1], valid_data[col2])
+                        if confusion_matrix.size > 0 and min(confusion_matrix.shape) > 1:
+                            chi2 = chi2_contingency(confusion_matrix)[0]
+                            n = confusion_matrix.sum().sum()
+                            val = np.sqrt(chi2 / (n * (min(confusion_matrix.shape) - 1))) if n > 0 else 0.0
+                        else:
+                            val = 0.0
+                            
+                    # --- Case C: Categorical vs. Numeric (Correlation Ratio Eta) ---
+                    else:
+                        # Identify which is which
+                        cat_col, num_col = (col1, col2) if not is_num1 else (col2, col1)
+                        
+                        categories = valid_data[cat_col].unique()
+                        if len(categories) > 1:
+                            groups = [valid_data[valid_data[cat_col] == c][num_col] for c in categories]
+                            groups = [g for g in groups if len(g) > 0]
+                            
+                            # Calculate Eta-Squared
+                            grand_mean = valid_data[num_col].mean()
+                            ss_total = ((valid_data[num_col] - grand_mean) ** 2).sum()
+                            ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for g in groups)
+                            
+                            val = np.sqrt(ss_between / ss_total) if ss_total > 0 else 0.0
+                        else:
+                            val = 0.0
+                    
+                    # Assign values symmetrically
+                    assoc_matrix.loc[col1, col2] = round(val, 3)
+                    assoc_matrix.loc[col2, col1] = round(val, 3)
+                    
+            # 3. Plot the interactive Plotly Heatmap
+            print("--- Global Association Matrix ---")
+            display(assoc_matrix)
+            
+            fig = px.imshow(
+                assoc_matrix,
+                text_auto=".2f",
+                aspect="auto",
+                color_continuous_scale="viridis",
+                title="<b>Unified Association Heatmap (Numeric & Categorical)</b>",
+                labels=dict(color="Association Strength")
+            )
+            
+            fig.update_layout(
+                height=max(500, n_cols * 45),
+                width=max(600, n_cols * 45),
+                template="plotly_white"
+            )
+            
+            fig.show()
+            return assoc_matrix
+            
 import time
 from datetime import datetime
 import uuid
