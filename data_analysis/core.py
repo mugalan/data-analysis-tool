@@ -386,62 +386,76 @@ class DataInspector:
                         title="Pearson Correlation Heatmap")
         fig.show()
 
-    def cramers_v_matrix(self):
-        """
-        Calculates the Cramér's V association matrix for all categorical columns.
-        Returns a pandas DataFrame representing the pairwise association matrix.
-        """
-        if self.df is None: 
-            print("⚠️ Empty DataFrame.")
-            return 
-        # 1. Isolate categorical columns
-        cat_df = self.df.select_dtypes(exclude=[np.number])
-        
-        if cat_df.empty:
-            print("⚠️ No categorical columns found in the DataFrame.")
-            return pd.DataFrame()
+    def get_categorical_correlation(self):
+            """
+            Calculates the Cramér's V association matrix for all categorical columns
+            and displays it as an interactive Plotly Heatmap.
+            """
+            if self.df is None: return print("Error: No data loaded.")
             
-        cols = cat_df.columns
-        n_cols = len(cols)
-        
-        # 2. Initialize an empty matrix
-        corr_matrix = pd.DataFrame(np.zeros((n_cols, n_cols)), index=cols, columns=cols)
-        
-        # 3. Compute pairwise Cramér's V
-        for i in range(n_cols):
-            for j in range(i, n_cols):
-                col1 = cols[i]
-                col2 = cols[j]
+            # 1. Isolate categorical columns
+            cat_df = self.df.select_dtypes(exclude=[np.number])
+            
+            if cat_df.empty:
+                return print("⚠️ No categorical columns found to compute associations.")
                 
-                # Diagonal is always perfectly associated
-                if i == j:
-                    corr_matrix.loc[col1, col2] = 1.0
-                    continue
+            cols = cat_df.columns
+            n_cols = len(cols)
+            
+            # 2. Initialize an empty matrix
+            corr_matrix = pd.DataFrame(np.zeros((n_cols, n_cols)), index=cols, columns=cols)
+            
+            # 3. Compute pairwise Cramér's V
+            for i in range(n_cols):
+                for j in range(i, n_cols):
+                    col1 = cols[i]
+                    col2 = cols[j]
                     
-                # Build contingency table
-                confusion_matrix = pd.crosstab(cat_df[col1], cat_df[col2])
-                
-                # If a column is constant or has no data, skip to avoid division by zero
-                if confusion_matrix.size == 0 or min(confusion_matrix.shape) <= 1:
-                    corr_matrix.loc[col1, col2] = 0.0
-                    corr_matrix.loc[col2, col1] = 0.0
-                    continue
+                    if i == j:
+                        corr_matrix.loc[col1, col2] = 1.0
+                        continue
+                        
+                    confusion_matrix = pd.crosstab(cat_df[col1], cat_df[col2])
                     
-                # Compute Chi-Square statistic
-                chi2 = chi2_contingency(confusion_matrix)[0]
-                n = confusion_matrix.sum().sum()
-                
-                # Cramér's V formula
-                if n > 0:
-                    v = np.sqrt(chi2 / (n * (min(confusion_matrix.shape) - 1)))
-                else:
-                    v = 0.0
+                    if confusion_matrix.size == 0 or min(confusion_matrix.shape) <= 1:
+                        corr_matrix.loc[col1, col2] = 0.0
+                        corr_matrix.loc[col2, col1] = 0.0
+                        continue
+                        
+                    chi2 = chi2_contingency(confusion_matrix)[0]
+                    n = confusion_matrix.sum().sum()
                     
-                # Matrix is symmetric, so we mirror the results
-                corr_matrix.loc[col1, col2] = v
-                corr_matrix.loc[col2, col1] = v
-                
-        return corr_matrix
+                    if n > 0:
+                        v = np.sqrt(chi2 / (n * (min(confusion_matrix.shape) - 1)))
+                    else:
+                        v = 0.0
+                        
+                    corr_matrix.loc[col1, col2] = v
+                    corr_matrix.loc[col2, col1] = v
+                    
+            # 4. Display the raw DataFrame
+            print("--- Cramér's V Association Matrix ---")
+            display(corr_matrix.round(3))
+            
+            # 5. Plot the interactive heatmap using Plotly
+            fig = px.imshow(
+                corr_matrix,
+                text_auto=".2f",
+                aspect="auto",
+                color_continuous_scale="Purples",
+                title="<b>Cramér's V Categorical Association Heatmap</b>",
+                labels=dict(color="Cramér's V")
+            )
+            
+            # Make the plot clean and readable
+            fig.update_layout(
+                height=max(400, n_cols * 80),  # Dynamically scale height based on number of columns
+                width=max(500, n_cols * 80),
+                template="plotly_white"
+            )
+            
+            fig.show()
+            return corr_matrix
 
 import time
 from datetime import datetime
