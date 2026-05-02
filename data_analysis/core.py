@@ -374,7 +374,7 @@ class DataInspector:
 
         fig.show()
 
-    def plot_correlation_heatmap(self):
+    def plot_numerical_correlation(self):
         """
         Displays an interactive Heatmap of the Pearson Correlation matrix
         for all numeric features in the dataset.
@@ -387,7 +387,7 @@ class DataInspector:
                         title="Pearson Correlation Heatmap")
         fig.show()
 
-    def get_categorical_correlation(self):
+    def plot_categorical_correlation(self):
             """
             Calculates the Cramér's V association matrix for all categorical columns
             and displays it as an interactive Plotly Heatmap.
