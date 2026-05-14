@@ -85,12 +85,7 @@ Identify hidden associations across different data types.
 inspector.plot_all_associations_heatmap()
 ```
 
-## Plotting & Visualization
-
-The toolkit provides an additional level of data visualization for **Custom Chart Generation** (via `PlottingMethods`). All plots are interactive and built using Plotly.
-
-
-### 1. Custom Chart Generation
+### 5. Custom Chart Generation
 The `PlottingMethods` class provides direct access to specific chart types. These methods return a dictionary containing the Plotly HTML for embedding, which can be rendered in Colab using `inspector.display_image(result)`.
 
 #### Bar Charts
@@ -130,7 +125,7 @@ plotter.display_image(result)
 ```
 
 
-### 2. Implementation Note for Google Colab
+### 6. Implementation Note for Google Colab
 To view the output of custom `PlottingMethods`, always use the built-in display helper:
 ```python
 result = inspector.plot_bar_chart(...)
