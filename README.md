@@ -23,7 +23,7 @@ A robust Python toolkit designed for data cleaning, exploration, and interactive
 
 ```bash
 # Basic installation
-pip install data-analysis-tool
+pip install "git+https://github.com/mugalan/data-analysis-tool.git"
 
 # Install with plotting support (required for visualizations)
 pip install data-analysis-tool[plotting]
