@@ -724,6 +724,7 @@ class DataInspector:
     def test_constant_mean(self, columns: Optional[Sequence[str]] = None, chunks: int = 10) -> Any:
         """
         Evaluates first moment homogeneity across sequential data blocks using MANOVA via Wilks' Lambda.
+        Numerically stabilized via log-determinant tracking and shrinkage regularization.
         
         Parameters:
         - columns: Sequence of strings. If None, automatically extracts all numerical columns.
@@ -734,6 +735,9 @@ class DataInspector:
 
         if columns is None:
             target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            # Safety: Ensure tracking column isn't auto-selected
+            if 'count' in target_cols:
+                target_cols.remove('count')
             if not target_cols:
                 raise ValueError("No numerical columns found automatically in the dataset.")
         else:
@@ -744,24 +748,26 @@ class DataInspector:
                 raise TypeError(f"The following columns are not numerical or do not exist: {non_numeric}")
             target_cols = list(columns)
 
-        # Create chunk indices
         n = len(self.df)
+        m = len(target_cols)
         chunk_size = n // chunks
-        if chunk_size < len(target_cols):
-            raise ValueError(f"Sample size per chunk ({chunk_size}) must be greater than the number of dimensions ({len(target_cols)}). Reduce the chunk count.")
+        if chunk_size < m:
+            raise ValueError(f"Sample size per chunk ({chunk_size}) must be greater than features ({m}). Reduce chunks.")
 
         analysis_df = self.df[target_cols].copy()
+        
+        # Explicitly drop any remaining missing values row-wise to secure linear algebra operations
+        analysis_df = analysis_df.dropna()
+        n = len(analysis_df)
+        
         analysis_df['_chunk_label'] = np.minimum(np.arange(n) // chunk_size, chunks - 1)
 
-        # Compute Global Mean and Chunk Aggregations
+        # Compute Global Mean and Chunk Decompositions
         global_mean = analysis_df[target_cols].mean().values
-        chunk_groups = analysis_df.groupby('_chunk_label')
-        
-        m = len(target_cols)
         W = np.zeros((m, m))
         B = np.zeros((m, m))
 
-        for label, group in chunk_groups:
+        for label, group in analysis_df.groupby('_chunk_label'):
             X_chunk = group[target_cols].values
             chunk_mean = X_chunk.mean(axis=0)
             n_j = len(X_chunk)
@@ -772,19 +778,29 @@ class DataInspector:
             mean_diff = (chunk_mean - global_mean).reshape(-1, 1)
             B += n_j * np.dot(mean_diff, mean_diff.T)
 
-        # Wilks' Lambda calculation
-        det_W = np.linalg.det(W)
-        det_T = np.linalg.det(W + B)
-        
-        if det_T == 0:
-            raise np.linalg.LinAlgError("The total variation matrix is singular. Cannot compute Wilks' Lambda.")
-            
-        wilks_lambda = det_W / det_T
+        # Regularization factor to guarantee numerical stability and protect against constant sub-chunks
+        epsilon = 1e-6 * np.eye(m)
+        W_stable = W + epsilon
+        T_stable = W + B + epsilon
+
+        # Calculate using Stable Log-Determinants to completely bypass overflow/underflow
+        sign_W, log_det_W = np.linalg.slogdet(W_stable)
+        sign_T, log_det_T = np.linalg.slogdet(T_stable)
+
+        if sign_W <= 0 or sign_T <= 0:
+            raise np.linalg.LinAlgError("Variation matrices are poorly scaled or non-invertible.")
+
+        # Wilks' Lambda derived safely in log-space: Λ = exp(log|W| - log|T|)
+        log_wilks = log_det_W - log_det_T
+        wilks_lambda = np.exp(log_wilks)
 
         # Bartlett's Chi-Square Approximation
         df_stat = m * (chunks - 1)
         scale_factor = n - 1 - (m + chunks) / 2
-        chi2_calc = -scale_factor * np.log(np.maximum(wilks_lambda, 1e-15))
+        chi2_calc = -scale_factor * log_wilks
+        
+        # Protect against edge-case negative chi2 due to tiny floating-point approximations
+        chi2_calc = max(0.0, chi2_calc) 
         p_value = 1.0 - scipy.stats.chi2.cdf(chi2_calc, df_stat)
 
         print(f"\n--- MANOVA Mean Homogeneity Test (g={chunks} chunks, m={m} features) ---")
@@ -802,6 +818,7 @@ class DataInspector:
     def test_constant_covariance(self, columns: Optional[Sequence[str]] = None, chunks: int = 5) -> Any:
         """
         Evaluates second moment homogeneity across sequential data blocks using Box's M-test.
+        Numerically stabilized via shrinkage regularization and row-wise imputation protection.
         
         Parameters:
         - columns: Sequence of strings. If None, automatically extracts all numerical columns.
@@ -812,6 +829,8 @@ class DataInspector:
 
         if columns is None:
             target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if 'count' in target_cols:
+                target_cols.remove('count')
             if not target_cols:
                 raise ValueError("No numerical columns found automatically in the dataset.")
         else:
@@ -822,29 +841,30 @@ class DataInspector:
                 raise TypeError(f"The following columns are not numerical or do not exist: {non_numeric}")
             target_cols = list(columns)
 
-        n = len(self.df)
+        analysis_df = self.df[target_cols].copy().dropna()
+        n = len(analysis_df)
         m = len(target_cols)
         chunk_size = n // chunks
         
         if chunk_size <= m:
-            raise ValueError(f"Degrees of freedom per chunk ({chunk_size - 1}) must be greater than number of dimensions ({m}).")
+            raise ValueError(f"Degrees of freedom per chunk ({chunk_size - 1}) must be greater than number of dimensions ({m}). Reduce chunks.")
 
-        # Extract segments and calculate covariance matrices
+        analysis_df['_chunk_label'] = np.minimum(np.arange(n) // chunk_size, chunks - 1)
+        
         S_chunks = []
         n_chunks = []
         log_det_S = 0.0
-        
-        analysis_df = self.df[target_cols].copy()
-        analysis_df['_chunk_label'] = np.minimum(np.arange(n) // chunk_size, chunks - 1)
-        
-        # Calculate individual chunks and pooled covariance matrix
         pooled_S = np.zeros((m, m))
         total_df = 0
+        
+        # Stability factor matrix
+        epsilon = 1e-6 * np.eye(m)
         
         for label, group in analysis_df.groupby('_chunk_label'):
             X_chunk = group[target_cols].values
             n_j = len(X_chunk)
-            S_j = np.cov(X_chunk, rowvar=False, ddof=1)
+            # Regularize individual chunk covariances to prevent singularities
+            S_j = np.cov(X_chunk, rowvar=False, ddof=1) + epsilon
             
             S_chunks.append(S_j)
             n_chunks.append(n_j)
@@ -855,13 +875,13 @@ class DataInspector:
             
             sign, logdet = np.linalg.slogdet(S_j)
             if sign <= 0:
-                raise np.linalg.LinAlgError(f"Covariance matrix for chunk {label} is singular or negative definite.")
+                raise np.linalg.LinAlgError(f"Covariance matrix for chunk {label} is non-positive definite.")
             log_det_S += df_j * logdet
 
         pooled_S /= total_df
         sign_p, log_det_Sp = np.linalg.slogdet(pooled_S)
         if sign_p <= 0:
-            raise np.linalg.LinAlgError("Pooled covariance matrix is singular or negative definite.")
+            raise np.linalg.LinAlgError("Pooled covariance matrix is non-positive definite.")
 
         # Box's M calculation
         M = total_df * log_det_Sp - log_det_S
@@ -874,6 +894,7 @@ class DataInspector:
         C = (sum_inv_df - inv_total_df) * (numerator_C / denominator_C)
         
         chi2_calc = M * (1.0 - C)
+        chi2_calc = max(0.0, chi2_calc)  # Guard against tiny negative floating-point offsets
         df_stat = (m * (m + 1) * (chunks - 1)) / 2.0
         p_value = 1.0 - scipy.stats.chi2.cdf(chi2_calc, df_stat)
 
@@ -892,6 +913,7 @@ class DataInspector:
     def test_row_independence(self, columns: Optional[Sequence[str]] = None, max_lag: Optional[int] = None) -> Any:
         """
         Evaluates row-to-row statistical independence using the Multivariate Ljung-Box Portmanteau test.
+        Numerically stabilized via pseudo-inverse fallbacks and row-wise missing value removal.
         
         Parameters:
         - columns: Sequence of strings. If None, automatically extracts all numerical columns.
@@ -902,6 +924,8 @@ class DataInspector:
 
         if columns is None:
             target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if 'count' in target_cols:
+                target_cols.remove('count')
             if not target_cols:
                 raise ValueError("No numerical columns found automatically in the dataset.")
         else:
@@ -912,7 +936,8 @@ class DataInspector:
                 raise TypeError(f"The following columns are not numerical or do not exist: {non_numeric}")
             target_cols = list(columns)
 
-        n = len(self.df)
+        analysis_df = self.df[target_cols].copy().dropna()
+        n = len(analysis_df)
         m = len(target_cols)
         
         if max_lag is None:
@@ -922,12 +947,18 @@ class DataInspector:
             raise ValueError(f"Max lag ({max_lag}) must be less than the total sample size ({n}).")
 
         # Center data matrix
-        X = self.df[target_cols].values
+        X = analysis_df[target_cols].values
         X_centered = X - X.mean(axis=0)
         
-        # Lag 0 global variance-covariance matrix
-        Gamma_0 = np.dot(X_centered.T, X_centered) / n
-        inv_Gamma_0 = np.linalg.inv(Gamma_0)
+        # Lag 0 global variance-covariance matrix + stability shrinkage
+        epsilon = 1e-6 * np.eye(m)
+        Gamma_0 = (np.dot(X_centered.T, X_centered) / n) + epsilon
+        
+        # Safe inversion via pseudo-inverse if standard inversion is unstable
+        try:
+            inv_Gamma_0 = np.linalg.inv(Gamma_0)
+        except np.linalg.LinAlgError:
+            inv_Gamma_0 = np.linalg.pinv(Gamma_0)
         
         Q_m = 0.0
         
@@ -936,7 +967,7 @@ class DataInspector:
             # Compute cross-covariance at lag k
             Gamma_k = np.dot(X_centered[k:].T, X_centered[:-k]) / n
             
-            # Trace execution of: Gamma_k^T * Gamma_0^-1 * Gamma_k * Gamma_0^-1
+            # Trace execution: Gamma_k^T * Gamma_0^-1 * Gamma_k * Gamma_0^-1
             M_k = np.dot(np.dot(np.dot(Gamma_k.T, inv_Gamma_0), Gamma_k), inv_Gamma_0)
             trace_val = np.trace(M_k)
             
@@ -944,6 +975,7 @@ class DataInspector:
             Q_m += trace_val / (n - k)
             
         Q_m *= (n ** 2)
+        Q_m = max(0.0, Q_m)
         df_stat = (m ** 2) * max_lag
         p_value = 1.0 - scipy.stats.chi2.cdf(Q_m, df_stat)
 
@@ -958,7 +990,6 @@ class DataInspector:
             print("🚨 Warning: Reject H0. Significant row-to-row serial dependency pattern identified.")
 
         return {"Q_m": Q_m, "p_value": p_value, "df": df_stat}
-
 
 import time
 from datetime import datetime
