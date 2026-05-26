@@ -9,8 +9,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google.colab import files
 import scipy
-from scipy.stats import chi2_contingency, pointbiserialr, f_oneway
+from scipy.stats import chi2_contingency, pointbiserialr, f_oneway,  multivariate_normal
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, RobustScaler
+
 
 
 
@@ -990,6 +991,60 @@ class DataInspector:
             print("🚨 Warning: Reject H0. Significant row-to-row serial dependency pattern identified.")
 
         return {"Q_m": Q_m, "p_value": p_value, "df": df_stat}
+
+    def estimate_joint_normal(self, columns: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """
+        Fits a Parametric Multivariate Normal Distribution to the IID data via Maximum Likelihood.
+        Returns the parameters, log-likelihood, and an active distribution object.
+        """
+        if self.df is None:
+            raise ValueError("Error: No data loaded.")
+            
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if 'count' in target_cols: target_cols.remove('count')
+            target_cols = list(target_cols)
+        else:
+            target_cols = list(columns)
+            
+        # Extract clean baseline array
+        X = self.df[target_cols].copy().dropna().values
+        n, m = X.shape
+        
+        if n <= m:
+            raise ValueError("Sample size must be larger than feature dimensions to compute joint covariance.")
+            
+        # 1. Parameter Estimation (MLE)
+        mu_hat = np.mean(X, axis=0)
+        
+        # Add a tiny stability shrinkage factor to guarantee positive-definiteness 
+        epsilon = 1e-6 * np.eye(m)
+        sigma_hat = np.cov(X, rowvar=False, ddof=1) + epsilon
+        
+        # 2. Initialize the Continuous Scipy Distribution Object
+        # This object allows us to evaluate the PDF or log-PDF of any row instantly
+        joint_dist = multivariate_normal(mean=mu_hat, cov=sigma_hat, allow_singular=True)
+        
+        # 3. Compute overall model fit metrics
+        log_likelihoods = joint_dist.logpdf(X)
+        total_log_likelihood = np.sum(log_likelihoods)
+        aic = 2 * (m + (m * (m + 1)) / 2) - 2 * total_log_likelihood  # Akaike Information Criterion
+        
+        print(f"\n--- Joint Normal Distribution Profile (m={m} features, n={n} samples) ---")
+        print("Estimated Mean Vector (μ_hat):")
+        for col, val in zip(target_cols, mu_hat):
+            print(f"  • {col}: {val:.4f}")
+        print(f"\nOverall Total Log-Likelihood: {total_log_likelihood:.4f}")
+        print(f"Akaike Information Criterion (AIC): {aic:.4f}")
+        
+        return {
+            "mean_vector": mu_hat,
+            "covariance_matrix": sigma_hat,
+            "log_likelihood": total_log_likelihood,
+            "aic": aic,
+            "distribution_object": joint_dist,
+            "features": target_cols
+        }
 
 import time
 from datetime import datetime
