@@ -720,6 +720,245 @@ class DataInspector:
             fig.show()
             return assoc_matrix
             
+    def test_constant_mean(self, columns: Optional[Sequence[str]] = None, chunks: int = 10) -> Any:
+        """
+        Evaluates first moment homogeneity across sequential data blocks using MANOVA via Wilks' Lambda.
+        
+        Parameters:
+        - columns: Sequence of strings. If None, automatically extracts all numerical columns.
+        - chunks: int, the number of non-overlapping consecutive blocks to split the data into.
+        """
+        if self.df is None: 
+            raise ValueError("Error: No data loaded.")
+
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if not target_cols:
+                raise ValueError("No numerical columns found automatically in the dataset.")
+        else:
+            if isinstance(columns, str):
+                columns = [columns]
+            non_numeric = [c for c in columns if c not in self.df.columns or not pd.api.types.is_numeric_dtype(self.df[c])]
+            if non_numeric:
+                raise TypeError(f"The following columns are not numerical or do not exist: {non_numeric}")
+            target_cols = list(columns)
+
+        # Create chunk indices
+        n = len(self.df)
+        chunk_size = n // chunks
+        if chunk_size < len(target_cols):
+            raise ValueError(f"Sample size per chunk ({chunk_size}) must be greater than the number of dimensions ({len(target_cols)}). Reduce the chunk count.")
+
+        analysis_df = self.df[target_cols].copy()
+        analysis_df['_chunk_label'] = np.minimum(np.arange(n) // chunk_size, chunks - 1)
+
+        # Compute Global Mean and Chunk Aggregations
+        global_mean = analysis_df[target_cols].mean().values
+        chunk_groups = analysis_df.groupby('_chunk_label')
+        
+        m = len(target_cols)
+        W = np.zeros((m, m))
+        B = np.zeros((m, m))
+
+        for label, group in chunk_groups:
+            X_chunk = group[target_cols].values
+            chunk_mean = X_chunk.mean(axis=0)
+            n_j = len(X_chunk)
+            
+            # Within-chunk variation
+            W += np.dot((X_chunk - chunk_mean).T, (X_chunk - chunk_mean))
+            # Between-chunk variation
+            mean_diff = (chunk_mean - global_mean).reshape(-1, 1)
+            B += n_j * np.dot(mean_diff, mean_diff.T)
+
+        # Wilks' Lambda calculation
+        det_W = np.linalg.det(W)
+        det_T = np.linalg.det(W + B)
+        
+        if det_T == 0:
+            raise np.linalg.LinAlgError("The total variation matrix is singular. Cannot compute Wilks' Lambda.")
+            
+        wilks_lambda = det_W / det_T
+
+        # Bartlett's Chi-Square Approximation
+        df_stat = m * (chunks - 1)
+        scale_factor = n - 1 - (m + chunks) / 2
+        chi2_calc = -scale_factor * np.log(np.maximum(wilks_lambda, 1e-15))
+        p_value = 1.0 - scipy.stats.chi2.cdf(chi2_calc, df_stat)
+
+        print(f"\n--- MANOVA Mean Homogeneity Test (g={chunks} chunks, m={m} features) ---")
+        print(f"Wilks' Lambda (Λ): {wilks_lambda:.5f}")
+        print(f"Chi-Square Statistic: {chi2_calc:.4f} | Degrees of Freedom: {df_stat}")
+        print(f"P-Value: {p_value:.6f}")
+        
+        if p_value > 0.05:
+            print("✅ Success: Fail to reject H0. First joint moment is stable; no structural mean drift detected.")
+        else:
+            print("🚨 Warning: Reject H0. Significant mean drift or structural instability detected across rows.")
+
+        return {"wilks_lambda": wilks_lambda, "chi2": chi2_calc, "p_value": p_value, "df": df_stat}
+
+    def test_constant_covariance(self, columns: Optional[Sequence[str]] = None, chunks: int = 5) -> Any:
+        """
+        Evaluates second moment homogeneity across sequential data blocks using Box's M-test.
+        
+        Parameters:
+        - columns: Sequence of strings. If None, automatically extracts all numerical columns.
+        - chunks: int, the number of non-overlapping consecutive blocks to split the data into.
+        """
+        if self.df is None: 
+            raise ValueError("Error: No data loaded.")
+
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if not target_cols:
+                raise ValueError("No numerical columns found automatically in the dataset.")
+        else:
+            if isinstance(columns, str):
+                columns = [columns]
+            non_numeric = [c for c in columns if c not in self.df.columns or not pd.api.types.is_numeric_dtype(self.df[c])]
+            if non_numeric:
+                raise TypeError(f"The following columns are not numerical or do not exist: {non_numeric}")
+            target_cols = list(columns)
+
+        n = len(self.df)
+        m = len(target_cols)
+        chunk_size = n // chunks
+        
+        if chunk_size <= m:
+            raise ValueError(f"Degrees of freedom per chunk ({chunk_size - 1}) must be greater than number of dimensions ({m}).")
+
+        # Extract segments and calculate covariance matrices
+        S_chunks = []
+        n_chunks = []
+        log_det_S = 0.0
+        
+        analysis_df = self.df[target_cols].copy()
+        analysis_df['_chunk_label'] = np.minimum(np.arange(n) // chunk_size, chunks - 1)
+        
+        # Calculate individual chunks and pooled covariance matrix
+        pooled_S = np.zeros((m, m))
+        total_df = 0
+        
+        for label, group in analysis_df.groupby('_chunk_label'):
+            X_chunk = group[target_cols].values
+            n_j = len(X_chunk)
+            S_j = np.cov(X_chunk, rowvar=False, ddof=1)
+            
+            S_chunks.append(S_j)
+            n_chunks.append(n_j)
+            
+            df_j = n_j - 1
+            pooled_S += df_j * S_j
+            total_df += df_j
+            
+            sign, logdet = np.linalg.slogdet(S_j)
+            if sign <= 0:
+                raise np.linalg.LinAlgError(f"Covariance matrix for chunk {label} is singular or negative definite.")
+            log_det_S += df_j * logdet
+
+        pooled_S /= total_df
+        sign_p, log_det_Sp = np.linalg.slogdet(pooled_S)
+        if sign_p <= 0:
+            raise np.linalg.LinAlgError("Pooled covariance matrix is singular or negative definite.")
+
+        # Box's M calculation
+        M = total_df * log_det_Sp - log_det_S
+        
+        # Scale parameter optimization factor (C)
+        sum_inv_df = sum(1.0 / (nj - 1) for nj in n_chunks)
+        inv_total_df = 1.0 / total_df
+        numerator_C = 2.0 * m**2 + 3.0 * m - 1.0
+        denominator_C = 6.0 * (m + 1.0) * (chunks - 1.0)
+        C = (sum_inv_df - inv_total_df) * (numerator_C / denominator_C)
+        
+        chi2_calc = M * (1.0 - C)
+        df_stat = (m * (m + 1) * (chunks - 1)) / 2.0
+        p_value = 1.0 - scipy.stats.chi2.cdf(chi2_calc, df_stat)
+
+        print(f"\n--- Box's M Covariance Homogeneity Test (g={chunks} chunks, m={m} features) ---")
+        print(f"Box's M Statistic: {M:.4f}")
+        print(f"Asymptotic Chi-Square: {chi2_calc:.4f} | Degrees of Freedom: {int(df_stat)}")
+        print(f"P-Value: {p_value:.6f}")
+        
+        if p_value > 0.001:
+            print("✅ Success: Fail to reject H0. Covariance structure is homoscedastic and stable across realizations.")
+        else:
+            print("🚨 Warning: Reject H0. Severe multivariate heteroscedasticity or covariance drift detected.")
+
+        return {"M": M, "chi2": chi2_calc, "p_value": p_value, "df": int(df_stat)}
+
+    def test_row_independence(self, columns: Optional[Sequence[str]] = None, max_lag: Optional[int] = None) -> Any:
+        """
+        Evaluates row-to-row statistical independence using the Multivariate Ljung-Box Portmanteau test.
+        
+        Parameters:
+        - columns: Sequence of strings. If None, automatically extracts all numerical columns.
+        - max_lag: int, maximum row-index offset to analyze. Defaults to ln(n).
+        """
+        if self.df is None: 
+            raise ValueError("Error: No data loaded.")
+
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if not target_cols:
+                raise ValueError("No numerical columns found automatically in the dataset.")
+        else:
+            if isinstance(columns, str):
+                columns = [columns]
+            non_numeric = [c for c in columns if c not in self.df.columns or not pd.api.types.is_numeric_dtype(self.df[c])]
+            if non_numeric:
+                raise TypeError(f"The following columns are not numerical or do not exist: {non_numeric}")
+            target_cols = list(columns)
+
+        n = len(self.df)
+        m = len(target_cols)
+        
+        if max_lag is None:
+            max_lag = int(np.ceil(np.log(n)))
+        
+        if max_lag >= n:
+            raise ValueError(f"Max lag ({max_lag}) must be less than the total sample size ({n}).")
+
+        # Center data matrix
+        X = self.df[target_cols].values
+        X_centered = X - X.mean(axis=0)
+        
+        # Lag 0 global variance-covariance matrix
+        Gamma_0 = np.dot(X_centered.T, X_centered) / n
+        inv_Gamma_0 = np.linalg.inv(Gamma_0)
+        
+        Q_m = 0.0
+        
+        # Aggregate trace variations across lags
+        for k in range(1, max_lag + 1):
+            # Compute cross-covariance at lag k
+            Gamma_k = np.dot(X_centered[k:].T, X_centered[:-k]) / n
+            
+            # Trace execution of: Gamma_k^T * Gamma_0^-1 * Gamma_k * Gamma_0^-1
+            M_k = np.dot(np.dot(np.dot(Gamma_k.T, inv_Gamma_0), Gamma_k), inv_Gamma_0)
+            trace_val = np.trace(M_k)
+            
+            # Update Ljung-Box inflation scalar
+            Q_m += trace_val / (n - k)
+            
+        Q_m *= (n ** 2)
+        df_stat = (m ** 2) * max_lag
+        p_value = 1.0 - scipy.stats.chi2.cdf(Q_m, df_stat)
+
+        print(f"\n--- Multivariate Ljung-Box Serial Independence Test (Lags Checked = {max_lag}) ---")
+        print(f"Portmanteau Statistic Q_m(H): {Q_m:.4f}")
+        print(f"Degrees of Freedom: {df_stat}")
+        print(f"P-Value: {p_value:.6f}")
+        
+        if p_value > 0.05:
+            print("✅ Success: Fail to reject H0. No cross-autocorrelation or row memory detected. Rows are independent.")
+        else:
+            print("🚨 Warning: Reject H0. Significant row-to-row serial dependency pattern identified.")
+
+        return {"Q_m": Q_m, "p_value": p_value, "df": df_stat}
+
+
 import time
 from datetime import datetime
 import uuid
