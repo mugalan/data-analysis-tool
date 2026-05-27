@@ -1056,6 +1056,66 @@ class DataInspector:
             "features": target_cols
         }
 
+    def instantiate_macro_clt_distribution(self, columns: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """
+        Operationalizes the macro-scale CLT model: mu_hat_n ~ N(mu_hat_n, (1/n) * S).
+        
+        This instantiates the continuous Gaussian sampling distribution of the empirical
+        mean vector. It models parameter uncertainty rather than raw data variations,
+        providing the mathematical foundation to track system drift and draw baseline 
+        confidence ellipsoids.
+        """
+        if self.df is None:
+            raise ValueError("Error: No data loaded.")
+            
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if 'count' in target_cols: target_cols.remove('count')
+            target_cols = list(target_cols)
+        else:
+            target_cols = list(columns)
+            
+        # Extract data to compute sample properties
+        X = self.df[target_cols].copy().dropna().values
+        n, m = X.shape
+        
+        if n <= m:
+            raise ValueError("Sample size n must be larger than feature dimensions m to evaluate structural drift.")
+            
+        # 1. Compute Base Statistics
+        mu_hat = np.mean(X, axis=0)
+        S_matrix = np.cov(X, rowvar=False, ddof=1)
+        
+        # 2. Scale Covariance to Parameter Space via the CLT Factor (1/n)
+        # We inject a tiny numerical stability factor to guarantee positive-definiteness
+        epsilon = 1e-10 * np.eye(m)
+        clt_covariance = (1.0 / n) * S_matrix + epsilon
+        
+        # 3. Initialize Macro-Scale Scipy Distribution Object
+        # This models the distribution of the mean vector itself
+        macro_clt_dist = multivariate_normal(mean=mu_hat, cov=clt_covariance, allow_singular=True)
+        
+        # 4. Compute Volume / Scale Characteristics of the Uncertainty Envelope
+        # Trace of the scaled matrix indicates total average squared parameter error
+        total_parameter_variance = np.trace(clt_covariance)
+        
+        print(f"\n--- Operationalizing Macro-Scale Framework: μ_hat_n ~ N(μ_hat_n, (1/n)S) ---")
+        print(f"Sample Size (n): {n} vectors collapsing parameter uncertainty")
+        print("Expected Baseline Center Matrix (μ_hat_n):")
+        for col, val in zip(target_cols, mu_hat):
+            print(f"  • {col}: {val:.4f}")
+        print(f"\nTotal Trace Error Variance (Tr[(1/n)S]): {total_parameter_variance:.8f}")
+        print("Uncertainty envelope has shrunk uniformly by a factor of 1/n.")
+        
+        return {
+            "mean_vector": mu_hat,
+            "clt_covariance_matrix": clt_covariance,
+            "total_parameter_variance": total_parameter_variance,
+            "distribution_object": macro_clt_dist,
+            "features": target_cols
+        }
+
+
 import time
 from datetime import datetime
 import uuid
