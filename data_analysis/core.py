@@ -1116,6 +1116,115 @@ class DataInspector:
             "features": target_cols
         }
 
+    def compute_empirical_pca(self, columns: Optional[Sequence[str]] = None, show_plot: bool = True) -> Dict[str, Any]:
+        """
+        Operationalizes the geometric de-correlation framework via PCA.
+        Decomposes the unbiased empirical covariance matrix S into its orthogonal 
+        basis P_hat and diagonalized variance matrix Lambda_hat.
+        
+        Transforms centered realizations into uncorrelated principal component scores
+        and generates an interactive Plotly Bar Graph comparing the dominant PC values.
+        """
+        if self.df is None:
+            raise ValueError("Error: No data loaded.")
+            
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if 'count' in target_cols: target_cols.remove('count')
+            target_cols = list(target_cols)
+        else:
+            target_cols = list(columns)
+            
+        # Extract the matrix of realizations
+        X = self.df[target_cols].copy().dropna().values
+        n, m = X.shape
+        
+        if n <= m:
+            raise ValueError("Sample size n must be larger than feature dimensions m to isolate principal components.")
+            
+        # 1. Micro-scale Centering: (x_i - mu_hat_n)
+        mu_hat = np.mean(X, axis=0)
+        X_centered = X - mu_hat
+        
+        # 2. Compute Unbiased Sample Covariance Matrix S (ddof=1)
+        S_matrix = np.cov(X, rowvar=False, ddof=1)
+        
+        # 3. Spectral Decomposition: S = P * Lambda * P^T
+        eigenvalues, eigenvectors = np.linalg.eigh(S_matrix)
+        
+        # Sort in descending order to match theoretical conventions (lambda_1 >= lambda_2)
+        idx = np.argsort(eigenvalues)[::-1]
+        lambda_hat = eigenvalues[idx]
+        P_hat = eigenvectors[:, idx]
+        
+        # Safeguard: Clean negative eigenvalues caused by minor floating-point errors
+        lambda_hat = np.clip(lambda_hat, a_min=0.0, a_max=None)
+        
+        # 4. Variance Information Calculations
+        total_variance = np.sum(lambda_hat)
+        if total_variance == 0:
+            raise ValueError("Total variance is zero. Cannot project data into a null feature space.")
+            
+        explained_variance_ratio = lambda_hat / total_variance
+        cumulative_variance_ratio = np.cumsum(explained_variance_ratio)
+        
+        # 5. Map Realizations to Principal Component Scores: z_i = P^T * (x_i - mu_hat_n)
+        Z_scores = np.dot(X_centered, P_hat)
+        
+        # Verify de-correlation
+        S_Z = np.cov(Z_scores, rowvar=False, ddof=1)
+        
+        print(f"\n--- Operationalizing Geometric De-correlation Layer (PCA) ---")
+        print(f"Decomposing structural space of {m} features using {n} samples.")
+        print(f"Total System Variance (Trace[S]): {total_variance:.4f}")
+        
+        # 6. Interactive Plotly Bar Chart Configuration
+        if show_plot:
+            sample_indices = [f"Sample {i}" for i in range(n)]
+            
+            # Determine how many principal components to display side-by-side (up to 3)
+            pcs_to_plot = min(3, m)
+            
+            fig = go.Figure()
+            
+            # Palette for the distinct decoupled channels
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c'] 
+            
+            # Build grouped bars for each dominant principal coordinate
+            for j in range(pcs_to_plot):
+                fig.add_trace(
+                    go.Bar(
+                        x=sample_indices,
+                        y=Z_scores[:, j],
+                        name=f"PC {j+1} ({explained_variance_ratio[j]*100:.1f}% Var)",
+                        marker_color=colors[j]
+                    )
+                )
+            
+            # Layout optimization for clean, non-overlapping sample profiles
+            fig.update_layout(
+                title=f"De-correlated System States: Individual Principal Component Value Profiles",
+                xaxis_title="Observed Realization Index ($i$)",
+                yaxis_title="Principal Component Transformation Value ($z_{i,j}$)",
+                barmode='group',
+                template="plotly_white",
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                xaxis=dict(tickangle=-45 if n > 15 else 0) # Rotate labels cleanly if dataset is large
+            )
+            fig.show()
+            
+        return {
+            "mean_vector": mu_hat,
+            "covariance_matrix_S": S_matrix,
+            "eigenvalues_lambda": lambda_hat,
+            "eigenvectors_P": P_hat,
+            "explained_variance_ratio": explained_variance_ratio,
+            "cumulative_variance_ratio": cumulative_variance_ratio,
+            "transformed_scores_Z": Z_scores,
+            "score_covariance_diagonal": np.diag(S_Z),
+            "features": target_cols
+        }
 
 import time
 from datetime import datetime
