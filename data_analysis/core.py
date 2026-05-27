@@ -1122,8 +1122,9 @@ class DataInspector:
         Decomposes the unbiased empirical covariance matrix S into its orthogonal 
         basis P_hat and diagonalized variance matrix Lambda_hat.
         
-        Transforms centered realizations into uncorrelated principal component scores
-        and generates an interactive Plotly Bar Graph comparing the dominant PC values.
+        Generates an elite 3-panel Plotly Subplot Dashboard analyzing the 
+        Principal Component (PC) values (Eigenvalues), Explained Variance, 
+        and Residual Unexplained Variance.
         """
         if self.df is None:
             raise ValueError("Error: No data loaded.")
@@ -1168,6 +1169,9 @@ class DataInspector:
         explained_variance_ratio = lambda_hat / total_variance
         cumulative_variance_ratio = np.cumsum(explained_variance_ratio)
         
+        # Calculate Unexplained (Residual) Variance Spaces
+        unexplained_variance_ratio = 1.0 - cumulative_variance_ratio
+        
         # 5. Map Realizations to Principal Component Scores: z_i = P^T * (x_i - mu_hat_n)
         Z_scores = np.dot(X_centered, P_hat)
         
@@ -1178,39 +1182,79 @@ class DataInspector:
         print(f"Decomposing structural space of {m} features using {n} samples.")
         print(f"Total System Variance (Trace[S]): {total_variance:.4f}")
         
-        # 6. Interactive Plotly Bar Chart Configuration
+        # 6. Elite 3-panel Horizontal Subplot Dashboard
         if show_plot:
-            sample_indices = [f"Sample {i}" for i in range(n)]
+            pc_labels = [f"PC {i+1}" for i in range(m)]
             
-            # Determine how many principal components to display side-by-side (up to 3)
-            pcs_to_plot = min(3, m)
-            
-            fig = go.Figure()
-            
-            # Palette for the distinct decoupled channels
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c'] 
-            
-            # Build grouped bars for each dominant principal coordinate
-            for j in range(pcs_to_plot):
-                fig.add_trace(
-                    go.Bar(
-                        x=sample_indices,
-                        y=Z_scores[:, j],
-                        name=f"PC {j+1} ({explained_variance_ratio[j]*100:.1f}% Var)",
-                        marker_color=colors[j]
-                    )
+            fig = make_subplots(
+                rows=1, cols=3,
+                shared_xaxes=True,
+                horizontal_spacing=0.07,
+                subplot_titles=(
+                    "Component Values (Eigenvalues λ)", 
+                    "Information Allocation Profile", 
+                    "Residual Unexplained Variance"
                 )
+            )
             
-            # Layout optimization for clean, non-overlapping sample profiles
+            # --- Subplot 1: Absolute PC Eigenvalues ---
+            fig.add_trace(
+                go.Bar(
+                    x=pc_labels, 
+                    y=lambda_hat,
+                    name="Eigenvalue (λ_j)",
+                    marker=dict(color='#1f77b4', line=dict(color='black', width=1))
+                ),
+                row=1, col=1
+            )
+            fig.update_yaxes(title_text="Variance Magnitude (Scale of S)", row=1, col=1)
+            
+            # --- Subplot 2: Explained Variance Ratio ---
+            fig.add_trace(
+                go.Bar(
+                    x=pc_labels, 
+                    y=explained_variance_ratio * 100,
+                    name="Marginal Explained",
+                    marker=dict(color='#ff7f0e', opacity=0.75)
+                ),
+                row=1, col=2
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=pc_labels, 
+                    y=cumulative_variance_ratio * 100,
+                    mode='lines+markers',
+                    name='Cumulative Captured',
+                    line=dict(color='#d62728', width=2.5, dash='dash')
+                ),
+                row=1, col=2
+            )
+            fig.update_yaxes(title_text="Captured Structure (%)", range=[-2, 105], row=1, col=2)
+            
+            # --- Subplot 3: Unexplained Residual Space ---
+            fig.add_trace(
+                go.Bar(
+                    x=pc_labels, 
+                    y=unexplained_variance_ratio * 100,
+                    name="Remaining Noise / Scale",
+                    marker=dict(color='#2ca02c', line=dict(color='black', width=0.5))
+                ),
+                row=1, col=3
+            )
+            fig.update_yaxes(title_text="Excluded Information (%)", range=[-2, 105], row=1, col=3)
+            
+            # Formatting optimizations for all axes
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=1)
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=2)
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=3)
+            
+            # Global Dashboard Adjustments
             fig.update_layout(
-                title=f"De-correlated System States: Individual Principal Component Value Profiles",
-                xaxis_title="Observed Realization Index ($i$)",
-                yaxis_title="Principal Component Transformation Value ($z_{i,j}$)",
-                barmode='group',
+                title_text=f"Geometric PCA Breakdown (m={m} Coordinates, n={n} Snapshots, Trace[S]={total_variance:.3f})",
                 template="plotly_white",
                 showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                xaxis=dict(tickangle=-45 if n > 15 else 0) # Rotate labels cleanly if dataset is large
+                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
+                margin=dict(t=100, b=50, l=50, r=50)
             )
             fig.show()
             
@@ -1221,6 +1265,7 @@ class DataInspector:
             "eigenvectors_P": P_hat,
             "explained_variance_ratio": explained_variance_ratio,
             "cumulative_variance_ratio": cumulative_variance_ratio,
+            "unexplained_variance_ratio": unexplained_variance_ratio,
             "transformed_scores_Z": Z_scores,
             "score_covariance_diagonal": np.diag(S_Z),
             "features": target_cols
