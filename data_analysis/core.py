@@ -994,8 +994,12 @@ class DataInspector:
 
     def estimate_joint_normal(self, columns: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """
-        Fits a Parametric Multivariate Normal Distribution to the IID data via Maximum Likelihood.
-        Returns the parameters, log-likelihood, and an active distribution object.
+        Operationalizes the micro-scale model X_i ~ N(mu_hat, S) by fitting a 
+        parametric Multivariate Normal Distribution to the verified IID baseline.
+        
+        Utilizes finite-sample unbiased Maximum Likelihood Estimation (MLE) with 
+        Bessel's correction to construct a continuous probabilistic boundary 
+        for real-time anomaly detection.
         """
         if self.df is None:
             raise ValueError("Error: No data loaded.")
@@ -1007,39 +1011,45 @@ class DataInspector:
         else:
             target_cols = list(columns)
             
-        # Extract clean baseline array
+        # Extract clean baseline matrix of realizations
         X = self.df[target_cols].copy().dropna().values
         n, m = X.shape
         
         if n <= m:
-            raise ValueError("Sample size must be larger than feature dimensions to compute joint covariance.")
+            raise ValueError("Sample size n must be strictly larger than feature dimensions m to compute a non-singular joint covariance matrix.")
             
-        # 1. Parameter Estimation (MLE)
+        # 1. Parameter Estimation 
+        # mu_hat maps the spatial center of gravity of the features
         mu_hat = np.mean(X, axis=0)
         
-        # Add a tiny stability shrinkage factor to guarantee positive-definiteness 
+        # S maps structural variations using ddof=1 (Bessel's correction) to correct MLE bias
+        # A tiny stability shrinkage factor (epsilon) guarantees positive-definiteness
         epsilon = 1e-6 * np.eye(m)
-        sigma_hat = np.cov(X, rowvar=False, ddof=1) + epsilon
+        S_matrix = np.cov(X, rowvar=False, ddof=1) + epsilon
         
         # 2. Initialize the Continuous Scipy Distribution Object
-        # This object allows us to evaluate the PDF or log-PDF of any row instantly
-        joint_dist = multivariate_normal(mean=mu_hat, cov=sigma_hat, allow_singular=True)
+        # Operates as the continuous Maximum Entropy boundary for raw random vectors X_i
+        joint_dist = multivariate_normal(mean=mu_hat, cov=S_matrix, allow_singular=True)
         
-        # 3. Compute overall model fit metrics
+        # 3. Compute overall model fit metrics using the joint PDF
         log_likelihoods = joint_dist.logpdf(X)
         total_log_likelihood = np.sum(log_likelihoods)
-        aic = 2 * (m + (m * (m + 1)) / 2) - 2 * total_log_likelihood  # Akaike Information Criterion
         
-        print(f"\n--- Joint Normal Distribution Profile (m={m} features, n={n} samples) ---")
-        print("Estimated Mean Vector (μ_hat):")
+        # Number of parameters K = m means + (m * (m + 1) / 2) variances/covariances
+        k_parameters = m + (m * (m + 1)) // 2
+        aic = 2 * k_parameters - 2 * total_log_likelihood  # Akaike Information Criterion
+        
+        print(f"\n--- Operationalizing Micro-Scale Framework: X_i ~ N(mu_hat, S) ---")
+        print(f"Dataset Scale: m={m} features, n={n} realized samples")
+        print("Empirical Mean Vector (μ_hat_n):")
         for col, val in zip(target_cols, mu_hat):
             print(f"  • {col}: {val:.4f}")
-        print(f"\nOverall Total Log-Likelihood: {total_log_likelihood:.4f}")
+        print(f"\nJoint Log-Likelihood Evaluation: {total_log_likelihood:.4f}")
         print(f"Akaike Information Criterion (AIC): {aic:.4f}")
         
         return {
             "mean_vector": mu_hat,
-            "covariance_matrix": sigma_hat,
+            "covariance_matrix": S_matrix,
             "log_likelihood": total_log_likelihood,
             "aic": aic,
             "distribution_object": joint_dist,
