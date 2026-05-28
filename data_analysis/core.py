@@ -1304,26 +1304,11 @@ class DataInspector:
             
             # Global Dashboard Layout Adjustments
             fig.update_layout(
-                # Explicitly position the title near the very top edge (y=0.98 or 0.95)
-                title=dict(
-                    # text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
-                    x=0.5,
-                    y=0.96,
-                    xanchor="center",
-                    yanchor="top"
-                ),
+                # title_text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
                 template="plotly_white",
                 showlegend=True,
-                # Push the legend slightly down so it sits perfectly between the title and subplots
-                legend=dict(
-                    orientation="h", 
-                    yanchor="bottom", 
-                    y=1.02, 
-                    xanchor="center", 
-                    x=0.5
-                ),
-                # Expand top margin to 150 to give both elements breathing room
-                margin=dict(t=150, b=50, l=50, r=50)
+                legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5),
+                margin=dict(t=120, b=50, l=50, r=50)
             )
             fig.show()
             
