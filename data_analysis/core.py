@@ -1476,20 +1476,27 @@ class DataInspector:
             
             # Global Dashboard Layout Adjustments (Mitigating Legend/Title overlap)
             fig.update_layout(
-                title=dict(
-                    text=f"Latent Factor Subspace Optimization Dashboard (m={m} Channels, k={k} Factors, n={n} Realizations)",
-                    x=0.5, y=0.96,
-                    xanchor="center", yanchor="top"
-                ),
+                # title_text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
                 template="plotly_white",
                 showlegend=True,
-                legend=dict(
-                    orientation="h", 
-                    yanchor="bottom", y=1.05, 
-                    xanchor="center", x=0.5
-                ),
-                margin=dict(t=150, b=60, l=60, r=40)
+                legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5),
+                margin=dict(t=120, b=50, l=50, r=50)
             )
+            # fig.update_layout(
+            #     title=dict(
+            #         text=f"Latent Factor Subspace Optimization Dashboard (m={m} Channels, k={k} Factors, n={n} Realizations)",
+            #         x=0.5, y=0.96,
+            #         xanchor="center", yanchor="top"
+            #     ),
+            #     template="plotly_white",
+            #     showlegend=True,
+            #     legend=dict(
+            #         orientation="h", 
+            #         yanchor="bottom", y=1.05, 
+            #         xanchor="center", x=0.5
+            #     ),
+            #     margin=dict(t=150, b=60, l=60, r=40)
+            # )
             fig.show()
             
         return {
