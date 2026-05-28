@@ -1306,7 +1306,7 @@ class DataInspector:
             fig.update_layout(
                 # Explicitly position the title near the very top edge (y=0.98 or 0.95)
                 title=dict(
-                    text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
+                    # text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
                     x=0.5,
                     y=0.96,
                     xanchor="center",
