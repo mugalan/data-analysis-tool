@@ -1122,9 +1122,11 @@ class DataInspector:
         Decomposes the unbiased empirical covariance matrix S into its orthogonal 
         basis P_hat and diagonalized variance matrix Lambda_hat.
         
-        Generates an elite 3-panel Plotly Subplot Dashboard analyzing the 
-        Principal Component (PC) values (Eigenvalues), Explained Variance, 
-        and Residual Unexplained Variance.
+        Computes Hotelling's T^2 and Q (SPE) statistics across all possible 
+        truncation boundaries k to optimize structural health monitoring thresholds.
+        
+        Generates an elite 5-panel Plotly Subplot Dashboard analyzing the 
+        Eigenvalues, Explained Variance, Residual Variance, and T^2/Q tracking vs k.
         """
         if self.df is None:
             raise ValueError("Error: No data loaded.")
@@ -1159,7 +1161,7 @@ class DataInspector:
         P_hat = eigenvectors[:, idx]
         
         # Safeguard: Clean negative eigenvalues caused by minor floating-point errors
-        lambda_hat = np.clip(lambda_hat, a_min=0.0, a_max=None)
+        lambda_hat = np.clip(lambda_hat, a_min=1e-15, a_max=None)
         
         # 4. Variance Information Calculations
         total_variance = np.sum(lambda_hat)
@@ -1168,8 +1170,6 @@ class DataInspector:
             
         explained_variance_ratio = lambda_hat / total_variance
         cumulative_variance_ratio = np.cumsum(explained_variance_ratio)
-        
-        # Calculate Unexplained (Residual) Variance Spaces
         unexplained_variance_ratio = 1.0 - cumulative_variance_ratio
         
         # 5. Map Realizations to Principal Component Scores: z_i = P^T * (x_i - mu_hat_n)
@@ -1178,22 +1178,48 @@ class DataInspector:
         # Verify de-correlation
         S_Z = np.cov(Z_scores, rowvar=False, ddof=1)
         
+        # 6. Evaluate Statistical Distance Metrics (T^2 and Q) across all truncation options k
+        # k ranges from 1 to m-1 components retained
+        k_range = np.arange(1, m)
+        mean_T2_vs_k = []
+        mean_Q_vs_k = []
+        
+        # Pre-allocate dictionary arrays for full sample retrieval tracking
+        T2_matrix = np.zeros((n, len(k_range)))
+        Q_matrix = np.zeros((n, len(k_range)))
+        
+        for idx_k, k in enumerate(k_range):
+            # Hotelling's T^2 calculation for principal subspace: z_{i,k}^T * Lambda_k^-1 * z_{i,k}
+            Z_k = Z_scores[:, :k]
+            lambda_k = lambda_hat[:k]
+            T2_samples = np.sum((Z_k ** 2) / lambda_k, axis=1)
+            T2_matrix[:, idx_k] = T2_samples
+            mean_T2_vs_k.append(np.mean(T2_samples))
+            
+            # Q Statistic (SPE) calculation for residual subspace: ||e_i||^2 = sum(z_{i, m-k}^2)
+            Z_residual = Z_scores[:, k:]
+            Q_samples = np.sum(Z_residual ** 2, axis=1)
+            Q_matrix[:, idx_k] = Q_samples
+            mean_Q_vs_k.append(np.mean(Q_samples))
+            
         print(f"\n--- Operationalizing Geometric De-correlation Layer (PCA) ---")
         print(f"Decomposing structural space of {m} features using {n} samples.")
         print(f"Total System Variance (Trace[S]): {total_variance:.4f}")
         
-        # 6. Elite 3-panel Horizontal Subplot Dashboard
+        # 7. Elite 5-panel Horizontal Subplot Dashboard
         if show_plot:
             pc_labels = [f"PC {i+1}" for i in range(m)]
+            k_labels = [f"k={k}" for k in k_range]
             
             fig = make_subplots(
-                rows=1, cols=3,
-                shared_xaxes=True,
-                horizontal_spacing=0.07,
+                rows=1, cols=5,
+                horizontal_spacing=0.04,
                 subplot_titles=(
-                    "Component Values (Eigenvalues λ)", 
-                    "Information Allocation Profile", 
-                    "Residual Unexplained Variance"
+                    "Component Values<br>(Eigenvalues λ)", 
+                    "Information Profile<br>(Explained Var.)", 
+                    "Residual Space<br>(Unexplained Var.)",
+                    "Mean Hotelling's T²<br>vs Subspace Size k",
+                    "Mean Q Statistic (SPE)<br>vs Subspace Size k"
                 )
             )
             
@@ -1207,7 +1233,8 @@ class DataInspector:
                 ),
                 row=1, col=1
             )
-            fig.update_yaxes(title_text="Variance Magnitude (Scale of S)", row=1, col=1)
+            fig.update_yaxes(title_text="Variance Magnitude", row=1, col=1)
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=1)
             
             # --- Subplot 2: Explained Variance Ratio ---
             fig.add_trace(
@@ -1230,31 +1257,58 @@ class DataInspector:
                 row=1, col=2
             )
             fig.update_yaxes(title_text="Captured Structure (%)", range=[-2, 105], row=1, col=2)
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=2)
             
             # --- Subplot 3: Unexplained Residual Space ---
             fig.add_trace(
                 go.Bar(
                     x=pc_labels, 
                     y=unexplained_variance_ratio * 100,
-                    name="Remaining Noise / Scale",
+                    name="Remaining Noise",
                     marker=dict(color='#2ca02c', line=dict(color='black', width=0.5))
                 ),
                 row=1, col=3
             )
-            fig.update_yaxes(title_text="Excluded Information (%)", range=[-2, 105], row=1, col=3)
-            
-            # Formatting optimizations for all axes
-            fig.update_xaxes(title_text="Principal Axes", row=1, col=1)
-            fig.update_xaxes(title_text="Principal Axes", row=1, col=2)
+            fig.update_yaxes(title_text="Excluded Info (%)", range=[-2, 105], row=1, col=3)
             fig.update_xaxes(title_text="Principal Axes", row=1, col=3)
             
-            # Global Dashboard Adjustments
+            # --- Subplot 4: Hotelling's T^2 vs k ---
+            fig.add_trace(
+                go.Scatter(
+                    x=k_labels,
+                    y=mean_T2_vs_k,
+                    mode='lines+markers',
+                    name='Mean T²',
+                    line=dict(color='#9467bd', width=2.5),
+                    marker=dict(size=6, symbol='diamond')
+                ),
+                row=1, col=4
+            )
+            fig.update_yaxes(title_text="Average T² Metric", row=1, col=4)
+            fig.update_xaxes(title_text="Truncation Cutoff (k)", row=1, col=4)
+            
+            # --- Subplot 5: Q Statistic (SPE) vs k ---
+            fig.add_trace(
+                go.Scatter(
+                    x=k_labels,
+                    y=mean_Q_vs_k,
+                    mode='lines+markers',
+                    name='Mean Q (SPE)',
+                    line=dict(color='#e377c2', width=2.5),
+                    marker=dict(size=6, symbol='square')
+                ),
+                row=1, col=5
+            )
+            fig.update_yaxes(title_text="Average Residual Energy", row=1, col=5)
+            fig.update_xaxes(title_text="Truncation Cutoff (k)", row=1, col=5)
+            
+            # Global Dashboard Layout Adjustments
             fig.update_layout(
-                title_text=f"Geometric PCA Breakdown (m={m} Coordinates, n={n} Snapshots, Trace[S]={total_variance:.3f})",
+                title_text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
                 template="plotly_white",
                 showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
-                margin=dict(t=100, b=50, l=50, r=50)
+                legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5),
+                margin=dict(t=120, b=50, l=50, r=50)
             )
             fig.show()
             
@@ -1268,7 +1322,12 @@ class DataInspector:
             "unexplained_variance_ratio": unexplained_variance_ratio,
             "transformed_scores_Z": Z_scores,
             "score_covariance_diagonal": np.diag(S_Z),
-            "features": target_cols
+            "features": target_cols,
+            "k_values": k_range,
+            "T2_matrix_vs_k": T2_matrix,
+            "Q_matrix_vs_k": Q_matrix,
+            "mean_T2_profile": np.array(mean_T2_vs_k),
+            "mean_Q_profile": np.array(mean_Q_vs_k)
         }
 
 import time
