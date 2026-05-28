@@ -1125,8 +1125,8 @@ class DataInspector:
         Computes Hotelling's T^2 and Q (SPE) statistics across all possible 
         truncation boundaries k to optimize structural health monitoring thresholds.
         
-        Generates an elite 5-panel Plotly Subplot Dashboard analyzing the 
-        Eigenvalues, Explained Variance, Residual Variance, and T^2/Q tracking vs k.
+        Generates an elite 2x3 Plotly Subplot Dashboard integrating the Feature Loading
+        Heatmap alongside Eigenvalues, Variance Profiles, and T^2/Q tracking vs k.
         """
         if self.df is None:
             raise ValueError("Error: No data loaded.")
@@ -1179,7 +1179,6 @@ class DataInspector:
         S_Z = np.cov(Z_scores, rowvar=False, ddof=1)
         
         # 6. Evaluate Statistical Distance Metrics (T^2 and Q) across all truncation options k
-        # k ranges from 1 to m-1 components retained
         k_range = np.arange(1, m)
         mean_T2_vs_k = []
         mean_Q_vs_k = []
@@ -1206,45 +1205,73 @@ class DataInspector:
         print(f"Decomposing structural space of {m} features using {n} samples.")
         print(f"Total System Variance (Trace[S]): {total_variance:.4f}")
         
-        # 7. Elite 5-panel Horizontal Subplot Dashboard
+        # 7. Elite 2x3 Diagnostic Subplot Dashboard
         if show_plot:
             pc_labels = [f"PC {i+1}" for i in range(m)]
             k_labels = [f"k={k}" for k in k_range]
+            sensor_labels = target_cols
             
             fig = make_subplots(
-                rows=1, cols=5,
-                horizontal_spacing=0.04,
+                rows=2, cols=3,
+                horizontal_spacing=0.18,
+                vertical_spacing=0.28,
                 subplot_titles=(
-                    "Component Values<br>(Eigenvalues λ)", 
-                    "Information Profile<br>(Explained Var.)", 
-                    "Residual Space<br>(Unexplained Var.)",
-                    "Mean Hotelling's T²<br>vs Subspace Size k",
-                    "Mean Q Statistic (SPE)<br>vs Subspace Size k"
+                    "Feature Loading Matrix |P_hat|", 
+                    "Component Values (Eigenvalues λ)", 
+                    "Information Profile (Explained Var.)",
+                    "Residual Space (Unexplained Var.)",
+                    "Mean Hotelling's T² vs Subspace Size k",
+                    "Mean Q Statistic (SPE) vs Subspace Size k"
                 )
             )
             
-            # --- Subplot 1: Absolute PC Eigenvalues ---
+            # --- ROW 1, COL 1: PCA Loading Heatmap (Left-anchored Colorbar Scale) ---
+            fig.add_trace(
+                go.Heatmap(
+                    z=np.abs(P_hat), 
+                    x=pc_labels, 
+                    y=sensor_labels, 
+                    colorscale='YlOrRd',
+                    colorbar=dict(
+                        title="Loading Weight", 
+                        x=-0.12,          # Shifts colorbar scale safely out to the far left edge
+                        len=0.38,         # Standardized length scaling matching row 1 vertical limits
+                        y=0.78,           # Centers inside row 1 bounds
+                        yanchor="middle",
+                        xanchor="right",  # Pushes scale updates outward, protecting y-axis text strings
+                        titleside="top"
+                    ),
+                    showscale=True, 
+                    showlegend=False
+                ), 
+                row=1, col=1
+            )
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=1)
+            
+            # --- ROW 1, COL 2: Absolute PC Eigenvalues ---
             fig.add_trace(
                 go.Bar(
                     x=pc_labels, 
                     y=lambda_hat,
                     name="Eigenvalue (λ_j)",
-                    marker=dict(color='#1f77b4', line=dict(color='black', width=1))
+                    marker=dict(color='#1f77b4', line=dict(color='black', width=0.5)),
+                    legendgroup="eigen"
                 ),
-                row=1, col=1
+                row=1, col=2
             )
-            fig.update_yaxes(title_text="Variance Magnitude", row=1, col=1)
-            fig.update_xaxes(title_text="Principal Axes", row=1, col=1)
+            fig.update_yaxes(title_text="Variance Magnitude", row=1, col=2)
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=2)
             
-            # --- Subplot 2: Explained Variance Ratio ---
+            # --- ROW 1, COL 3: Information Profile (Explained Variance) ---
             fig.add_trace(
                 go.Bar(
                     x=pc_labels, 
                     y=explained_variance_ratio * 100,
                     name="Marginal Explained",
-                    marker=dict(color='#ff7f0e', opacity=0.75)
+                    marker=dict(color='#ff7f0e', opacity=0.75),
+                    legendgroup="expl"
                 ),
-                row=1, col=2
+                row=1, col=3
             )
             fig.add_trace(
                 go.Scatter(
@@ -1252,27 +1279,29 @@ class DataInspector:
                     y=cumulative_variance_ratio * 100,
                     mode='lines+markers',
                     name='Cumulative Captured',
-                    line=dict(color='#d62728', width=2.5, dash='dash')
+                    line=dict(color='#d62728', width=2.5, dash='dash'),
+                    legendgroup="expl"
                 ),
-                row=1, col=2
+                row=1, col=3
             )
-            fig.update_yaxes(title_text="Captured Structure (%)", range=[-2, 105], row=1, col=2)
-            fig.update_xaxes(title_text="Principal Axes", row=1, col=2)
+            fig.update_yaxes(title_text="Captured Structure (%)", range=[-2, 105], row=1, col=3)
+            fig.update_xaxes(title_text="Principal Axes", row=1, col=3)
             
-            # --- Subplot 3: Unexplained Residual Space ---
+            # --- ROW 2, COL 1: Residual Unexplained Space ---
             fig.add_trace(
                 go.Bar(
                     x=pc_labels, 
                     y=unexplained_variance_ratio * 100,
                     name="Remaining Noise",
-                    marker=dict(color='#2ca02c', line=dict(color='black', width=0.5))
+                    marker=dict(color='#2ca02c', line=dict(color='black', width=0.5)),
+                    legendgroup="noise"
                 ),
-                row=1, col=3
+                row=2, col=1
             )
-            fig.update_yaxes(title_text="Excluded Info (%)", range=[-2, 105], row=1, col=3)
-            fig.update_xaxes(title_text="Principal Axes", row=1, col=3)
+            fig.update_yaxes(title_text="Excluded Info (%)", range=[-2, 105], row=2, col=1)
+            fig.update_xaxes(title_text="Principal Axes", row=2, col=1)
             
-            # --- Subplot 4: Hotelling's T^2 vs k ---
+            # --- ROW 2, COL 2: Hotelling's T^2 vs Cutoff k ---
             fig.add_trace(
                 go.Scatter(
                     x=k_labels,
@@ -1280,14 +1309,15 @@ class DataInspector:
                     mode='lines+markers',
                     name='Mean T²',
                     line=dict(color='#9467bd', width=2.5),
-                    marker=dict(size=6, symbol='diamond')
+                    marker=dict(size=6, symbol='diamond'),
+                    legendgroup="t2"
                 ),
-                row=1, col=4
+                row=2, col=2
             )
-            fig.update_yaxes(title_text="Average T² Metric", row=1, col=4)
-            fig.update_xaxes(title_text="Truncation Cutoff (k)", row=1, col=4)
+            fig.update_yaxes(title_text="Average T² Metric", row=2, col=2)
+            fig.update_xaxes(title_text="Truncation Cutoff (k)", row=2, col=2)
             
-            # --- Subplot 5: Q Statistic (SPE) vs k ---
+            # --- ROW 2, COL 3: Q Statistic Residuals vs Cutoff k ---
             fig.add_trace(
                 go.Scatter(
                     x=k_labels,
@@ -1295,20 +1325,29 @@ class DataInspector:
                     mode='lines+markers',
                     name='Mean Q (SPE)',
                     line=dict(color='#e377c2', width=2.5),
-                    marker=dict(size=6, symbol='square')
+                    marker=dict(size=6, symbol='square'),
+                    legendgroup="q_stat"
                 ),
-                row=1, col=5
+                row=2, col=3
             )
-            fig.update_yaxes(title_text="Average Residual Energy", row=1, col=5)
-            fig.update_xaxes(title_text="Truncation Cutoff (k)", row=1, col=5)
+            fig.update_yaxes(title_text="Average Residual Energy", row=2, col=3)
+            fig.update_xaxes(title_text="Truncation Cutoff (k)", row=2, col=3)
             
-            # Global Dashboard Layout Adjustments
+            # Global Unified Layout Configurations
             fig.update_layout(
-                # title_text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
-                template="plotly_white",
+                title=dict(text="Principal Component Analysis (PCA) Optimization & Feature Loading Dashboard", x=0.5, y=0.97, xanchor="center", yanchor="top"),
+                template="plotly_white", 
                 showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5),
-                margin=dict(t=120, b=50, l=50, r=50)
+                legend=dict(
+                    orientation="h", 
+                    yanchor="bottom", 
+                    y=1.02, 
+                    xanchor="center", 
+                    x=0.5
+                ),
+                margin=dict(t=150, b=60, l=140, r=80), 
+                height=750, 
+                width=1250
             )
             fig.show()
             
@@ -1401,23 +1440,32 @@ class DataInspector:
             
             fig = make_subplots(
                 rows=2, cols=2,
-                horizontal_spacing=0.15,
+                horizontal_spacing=0.24,  # Padded to leave breathing room for sensor labels
+                vertical_spacing=0.28,    # Prevents x-axis text strings from clipping titles
                 subplot_titles=(
-                    "Structural Loadings Matrix<br>|λ_(j,r)| Profiles", 
-                    "Variance Partitioning<br>Communality vs Uniqueness", 
-                    "Sensor Uniqueness<br>Isolated Noise Floor (φ²)",
-                    "Latent Factor Scores<br>Empirical Variance Profile"
+                    "Structural Loadings Matrix |λ_(j,r)|", 
+                    "Variance Partitioning (Communality vs Uniqueness)", 
+                    "Sensor Uniqueness Noise Floor (φ²)",
+                    "Latent Factor Scores Empirical Variance"
                 )
             )
             
-            # --- Subplot 1: Factor Loadings Heatmap ---
+            # --- Subplot 1: Factor Loadings Heatmap (Left-anchored scale matching PCA layout) ---
             fig.add_trace(
                 go.Heatmap(
                     z=np.abs(lambda_matrix),
                     x=factor_labels,
                     y=sensor_labels,
                     colorscale='YlOrRd',
-                    colorbar=dict(title="Sensitivity Score", x=-0.08, len=0.7, y=0.4),
+                    colorbar=dict(
+                        title="Sensitivity Score", 
+                        x=-0.15,          # Perfectly isolates colorbar to the left side 
+                        len=0.38,         # Fits height bounds of row 1 perfectly
+                        y=0.78,           # Centers vertically inside row 1 bounds
+                        yanchor="middle",
+                        xanchor="right",  # Protects y-axis text tags from getting crushed
+                        titleside="top"
+                    ),
                     showscale=True,
                     name="Loadings"
                 ),
@@ -1452,7 +1500,7 @@ class DataInspector:
                 go.Scatter(
                     x=sensor_labels, y=uniqueness,
                     mode='lines+markers',
-                    name='Uniqueness (φ²)',
+                    name='Uniqueness Profile (φ²)',
                     line=dict(color='#d62728', width=2, dash='dot'),
                     marker=dict(size=8, symbol='x')
                 ),
@@ -1474,29 +1522,24 @@ class DataInspector:
             fig.update_yaxes(title_text="Variance Level", row=2, col=2)
             fig.update_xaxes(title_text="Latent Vectors", row=2, col=2)
             
-            # Global Dashboard Layout Adjustments (Mitigating Legend/Title overlap)
+            # Global Unified Layout Configurations
             fig.update_layout(
-                # title_text=f"Structural Space Subspace Optimization Dashboard (m={m} Features, n={n} Snapshots)",
+                title=dict(
+                    text="Factor Analysis (FA) Latent Subspace Diagnostics Dashboard",
+                    x=0.5, y=0.97,
+                    xanchor="center", yanchor="top"
+                ),
                 template="plotly_white",
                 showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5),
-                margin=dict(t=120, b=50, l=50, r=50)
+                legend=dict(
+                    orientation="h", 
+                    yanchor="bottom", y=1.02, 
+                    xanchor="center", x=0.5
+                ),
+                margin=dict(t=150, b=60, l=140, r=80),
+                height=750,
+                width=1250
             )
-            # fig.update_layout(
-            #     title=dict(
-            #         text=f"Latent Factor Subspace Optimization Dashboard (m={m} Channels, k={k} Factors, n={n} Realizations)",
-            #         x=0.5, y=0.96,
-            #         xanchor="center", yanchor="top"
-            #     ),
-            #     template="plotly_white",
-            #     showlegend=True,
-            #     legend=dict(
-            #         orientation="h", 
-            #         yanchor="bottom", y=1.05, 
-            #         xanchor="center", x=0.5
-            #     ),
-            #     margin=dict(t=150, b=60, l=60, r=40)
-            # )
             fig.show()
             
         return {
