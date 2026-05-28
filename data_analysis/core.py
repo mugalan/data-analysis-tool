@@ -12,7 +12,7 @@ from google.colab import files
 import scipy
 from scipy.stats import chi2_contingency, pointbiserialr, f_oneway,  multivariate_normal
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, RobustScaler
-
+from sklearn.decomposition import FactorAnalysis
 
 
 
@@ -1329,7 +1329,180 @@ class DataInspector:
             "mean_T2_profile": np.array(mean_T2_vs_k),
             "mean_Q_profile": np.array(mean_Q_vs_k)
         }
-
+        
+    def compute_empirical_fa(self, k: int, columns: Optional[Sequence[str]] = None, show_plot: bool = True) -> Dict[str, Any]:
+        """
+        Operationalizes the Factor Analysis latent subspace framework.
+        Decomposes the empirical correlation matrix R into shared structural 
+        variance (Lambda * Lambda^T) and individual sensor uniqueness (Psi).
+        
+        Estimates the latent common factor scores using Thomson's MMSE regression method.
+        
+        Generates an elite 4-panel Plotly Subplot Dashboard analyzing Factor Loadings,
+        Communality vs Uniqueness balances, Sensor Noise Scales, and Latent Factor Energy.
+        """
+        if self.df is None:
+            raise ValueError("Error: No data loaded.")
+            
+        if columns is None:
+            target_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
+            if 'count' in target_cols: target_cols.remove('count')
+            target_cols = list(target_cols)
+        else:
+            target_cols = list(columns)
+            
+        # Extract data matrix of realizations
+        X = self.df[target_cols].copy().dropna().values
+        n, m = X.shape
+        
+        if n <= m:
+            raise ValueError("Sample size n must be larger than feature dimensions m to isolate latent factors.")
+        if k >= m:
+            raise ValueError(f"Latent factors k ({k}) must be strictly less than visible features m ({m}).")
+            
+        # 1. Standardize realizations to construct the Z space: Z = D^(-1/2) * (X - mu_hat)
+        mu_hat = np.mean(X, axis=0)
+        std_hat = np.std(X, axis=0, ddof=1)
+        
+        # Safeguard against zero variance
+        std_hat[std_hat == 0] = 1e-15
+        Z = (X - mu_hat) / std_hat
+        
+        # Compute the empirical correlation matrix R
+        R_matrix = np.corrcoef(X, rowvar=False)
+        
+        # 2. Fit the Factor Analysis Model via Maximum Likelihood / SVD
+        fa = FactorAnalysis(n_components=k, rotation='varimax', random_state=42)
+        fa.fit(Z)
+        
+        # Extract core FA parameters
+        # Lambda matrix: (m x k)
+        lambda_matrix = fa.components_.T 
+        # Psi diagonal vector: (m,)
+        psi_diagonal = fa.noise_variance_ 
+        
+        # 3. Calculate Communality (h^2) and Uniqueness (phi^2) vectors
+        communality = np.sum(lambda_matrix**2, axis=1)
+        uniqueness = psi_diagonal  # mathematically equal under the model
+        
+        # 4. Map realizations to Latent Space using Thomson's Regression Method:
+        # F_scores = Z * R^(-1) * Lambda
+        F_scores = fa.transform(Z)
+        
+        print(f"\n--- Operationalizing Latent Subspace Layer (Factor Analysis) ---")
+        print(f"Decomposing structural space of {m} sensors into {k} hidden physical factors.")
+        print(f"Average System Communality (Shared Subspace Energy): {np.mean(communality)*100:.2f}%")
+        print(f"Average System Uniqueness (Localized Noise Floor): {np.mean(uniqueness)*100:.2f}%")
+        
+        # 5. Elite 4-panel Horizontal Diagnostics Subplot Dashboard
+        if show_plot:
+            sensor_labels = target_cols
+            factor_labels = [f"Factor {j+1}" for j in range(k)]
+            
+            fig = make_subplots(
+                rows=1, cols=4,
+                horizontal_spacing=0.05,
+                subplot_titles=(
+                    "Structural Loadings Matrix<br>|λ_(j,r)| Profiles", 
+                    "Variance Partitioning<br>Communality vs Uniqueness", 
+                    "Sensor Uniqueness<br>Isolated Noise Floor (φ²)",
+                    "Latent Factor Scores<br>Empirical Variance Profile"
+                )
+            )
+            
+            # --- Subplot 1: Factor Loadings Heatmap ---
+            fig.add_trace(
+                go.Heatmap(
+                    z=np.abs(lambda_matrix),
+                    x=factor_labels,
+                    y=sensor_labels,
+                    colorscale='YlOrRd',
+                    colorbar=dict(title="Sensitivity Score", x=-0.08, len=0.7, y=0.4),
+                    showscale=True,
+                    name="Loadings"
+                ),
+                row=1, col=1
+            )
+            fig.update_xaxes(title_text="Latent Structures", row=1, col=1)
+            
+            # --- Subplot 2: Communality vs Uniqueness Stacked Bar ---
+            fig.add_trace(
+                go.Bar(
+                    y=sensor_labels, x=communality * 100,
+                    name="Communality (h² - Shared Structure)",
+                    orientation='h',
+                    marker=dict(color='#1f77b4')
+                ),
+                row=1, col=2
+            )
+            fig.add_trace(
+                go.Bar(
+                    y=sensor_labels, x=uniqueness * 100,
+                    name="Uniqueness (φ² - Channel Noise)",
+                    orientation='h',
+                    marker=dict(color='#ff7f0e')
+                ),
+                row=1, col=2
+            )
+            fig.update_layout(barmode='stack')
+            fig.update_xaxes(title_text="Variance Allocation (%)", range=[0, 100], row=1, col=2)
+            
+            # --- Subplot 3: Specific Sensor Uniqueness Line ---
+            fig.add_trace(
+                go.Scatter(
+                    x=sensor_labels, y=uniqueness,
+                    mode='lines+markers',
+                    name='Uniqueness (φ²)',
+                    line=dict(color='#d62728', width=2, dash='dot'),
+                    marker=dict(size=8, symbol='x')
+                ),
+                row=1, col=3
+            )
+            fig.update_yaxes(range=[-0.05, 1.05], row=1, col=3)
+            fig.update_xaxes(title_text="Monitored Channels", tickangle=25, row=1, col=3)
+            
+            # --- Subplot 4: Variance of Factor Scores ---
+            factor_variances = np.var(F_scores, axis=0, ddof=1)
+            fig.add_trace(
+                go.Bar(
+                    x=factor_labels, y=factor_variances,
+                    name="Factor Empirical Variance",
+                    marker=dict(color='#2ca02c', line=dict(color='black', width=0.5))
+                ),
+                row=1, col=4
+            )
+            fig.update_yaxes(title_text="Variance Level", row=1, col=4)
+            fig.update_xaxes(title_text="Latent Vectors", row=1, col=4)
+            
+            # Global Dashboard Layout Adjustments (Mitigating Legend/Title overlap)
+            fig.update_layout(
+                title=dict(
+                    text=f"Latent Factor Subspace Optimization Dashboard (m={m} Channels, k={k} Factors, n={n} Realizations)",
+                    x=0.5, y=0.96,
+                    xanchor="center", yanchor="top"
+                ),
+                template="plotly_white",
+                showlegend=True,
+                legend=dict(
+                    orientation="h", 
+                    yanchor="bottom", y=1.05, 
+                    xanchor="center", x=0.5
+                ),
+                margin=dict(t=150, b=60, l=60, r=40)
+            )
+            fig.show()
+            
+        return {
+            "mean_vector_mu": mu_hat,
+            "std_vector_D": std_hat,
+            "correlation_matrix_R": R_matrix,
+            "factor_loadings_lambda": lambda_matrix,
+            "uniqueness_psi": uniqueness,
+            "communality_h2": communality,
+            "latent_factor_scores_F": F_scores,
+            "sensors": target_cols
+        }
+                
 import time
 from datetime import datetime
 import uuid
