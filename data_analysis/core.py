@@ -1400,8 +1400,8 @@ class DataInspector:
             factor_labels = [f"Factor {j+1}" for j in range(k)]
             
             fig = make_subplots(
-                rows=1, cols=4,
-                horizontal_spacing=0.05,
+                rows=2, cols=2,
+                horizontal_spacing=0.15,
                 subplot_titles=(
                     "Structural Loadings Matrix<br>|λ_(j,r)| Profiles", 
                     "Variance Partitioning<br>Communality vs Uniqueness", 
@@ -1456,10 +1456,10 @@ class DataInspector:
                     line=dict(color='#d62728', width=2, dash='dot'),
                     marker=dict(size=8, symbol='x')
                 ),
-                row=1, col=3
+                row=2, col=1
             )
-            fig.update_yaxes(range=[-0.05, 1.05], row=1, col=3)
-            fig.update_xaxes(title_text="Monitored Channels", tickangle=25, row=1, col=3)
+            fig.update_yaxes(range=[-0.05, 1.05], row=2, col=1)
+            fig.update_xaxes(title_text="Monitored Channels", tickangle=25, row=2, col=1)
             
             # --- Subplot 4: Variance of Factor Scores ---
             factor_variances = np.var(F_scores, axis=0, ddof=1)
@@ -1469,10 +1469,10 @@ class DataInspector:
                     name="Factor Empirical Variance",
                     marker=dict(color='#2ca02c', line=dict(color='black', width=0.5))
                 ),
-                row=1, col=4
+                row=2, col=2
             )
-            fig.update_yaxes(title_text="Variance Level", row=1, col=4)
-            fig.update_xaxes(title_text="Latent Vectors", row=1, col=4)
+            fig.update_yaxes(title_text="Variance Level", row=2, col=2)
+            fig.update_xaxes(title_text="Latent Vectors", row=2, col=2)
             
             # Global Dashboard Layout Adjustments (Mitigating Legend/Title overlap)
             fig.update_layout(
