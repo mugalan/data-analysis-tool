@@ -13,8 +13,12 @@ import scipy
 from scipy.stats import chi2_contingency, pointbiserialr, f_oneway,  multivariate_normal
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, RobustScaler
 from sklearn.decomposition import FactorAnalysis
-
-
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import (
+    mean_squared_error,
+    mean_absolute_error,
+    r2_score
+)
 
 
 class DataInspector:
@@ -1056,6 +1060,367 @@ class DataInspector:
             "distribution_object": joint_dist,
             "features": target_cols
         }
+
+    def compute_and_plot_conditional_normal(
+        self,
+        x_columns: Sequence[str],
+        y_columns: Sequence[str],
+        show_plots: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Computes and visualizes the Gaussian conditional mean E[Y | X].
+
+        This method treats the selected variables as jointly Gaussian and computes
+        the conditional mean model
+
+            E[Y | X=x] = mu_Y + Sigma_YX Sigma_XX^{-1} (x - mu_X)
+
+        together with the conditional covariance
+
+            S_YY|X = Sigma_YY - Sigma_YX Sigma_XX^{-1} Sigma_XY.
+
+        It also fits the equivalent ordinary least-squares model using sklearn
+        and reports prediction diagnostics for Y given X.
+
+        Args:
+            x_columns:
+                Feature columns X, i.e. variables being conditioned on.
+
+            y_columns:
+                Target columns Y, i.e. variables whose conditional expectation
+                E[Y | X] is being estimated.
+
+            show_plots:
+                If True, displays Plotly diagnostic plots.
+
+        Returns:
+            Dictionary containing conditional Gaussian parameters, predictions,
+            residuals, metrics, covariance matrices, and the fitted sklearn model.
+        """
+
+        # ------------------------------------------------------------
+        # 1. Data extraction and validation
+        # ------------------------------------------------------------
+        x_columns = list(x_columns)
+        y_columns = list(y_columns)
+
+        all_cols = x_columns + y_columns
+        df_clean = self.df[all_cols].copy()
+        df_clean = df_clean.apply(pd.to_numeric, errors="coerce").dropna()
+
+        if df_clean.empty:
+            raise ValueError("No valid rows remain after selecting columns and dropping NaNs.")
+
+        n = len(df_clean)
+        p = len(x_columns)
+        q = len(y_columns)
+
+        if n <= p:
+            raise ValueError(
+                f"Not enough observations to estimate E[Y|X]. "
+                f"Need more rows than number of X variables. Got n={n}, p={p}."
+            )
+
+        X_data = df_clean[x_columns].to_numpy(dtype=float)
+        Y_data = df_clean[y_columns].to_numpy(dtype=float)
+
+        # ------------------------------------------------------------
+        # 2. Empirical means and centered variables
+        # ------------------------------------------------------------
+        mu_X = X_data.mean(axis=0)
+        mu_Y = Y_data.mean(axis=0)
+
+        X_centered = X_data - mu_X
+        Y_centered = Y_data - mu_Y
+
+        dof = n - 1
+
+        # ------------------------------------------------------------
+        # 3. Joint covariance block matrices
+        # ------------------------------------------------------------
+        Sigma_XX = (X_centered.T @ X_centered) / dof          # p x p
+        Sigma_YY = (Y_centered.T @ Y_centered) / dof          # q x q
+        Sigma_XY = (X_centered.T @ Y_centered) / dof          # p x q
+        Sigma_YX = Sigma_XY.T                                # q x p
+
+        # Use pseudo-inverse for numerical stability
+        Sigma_XX_inv = np.linalg.pinv(Sigma_XX)
+
+        # ------------------------------------------------------------
+        # 4. Gaussian conditional model E[Y | X]
+        # ------------------------------------------------------------
+        # B_cond has shape p x q, so that
+        # E[Y|X] = mu_Y + (X - mu_X) @ B_cond
+        B_cond = Sigma_XX_inv @ Sigma_XY                      # p x q
+
+        Y_hat_gaussian = mu_Y + X_centered @ B_cond           # n x q
+
+        # Conditional covariance of Y given X
+        Sigma_Y_given_X = Sigma_YY - Sigma_YX @ Sigma_XX_inv @ Sigma_XY
+        Sigma_Y_given_X = 0.5 * (Sigma_Y_given_X + Sigma_Y_given_X.T)
+
+        # ------------------------------------------------------------
+        # 5. Equivalent sklearn linear regression fit
+        # ------------------------------------------------------------
+        reg = LinearRegression(fit_intercept=True)
+        reg.fit(X_data, Y_data)
+        Y_hat_sklearn = reg.predict(X_data)
+
+        # These should be numerically very close to Y_hat_gaussian
+        max_prediction_difference = np.max(np.abs(Y_hat_gaussian - Y_hat_sklearn))
+
+        # ------------------------------------------------------------
+        # 6. Residuals and error metrics
+        # ------------------------------------------------------------
+        residuals = Y_data - Y_hat_gaussian
+
+        rmse = np.sqrt(mean_squared_error(Y_data, Y_hat_gaussian, multioutput="raw_values"))
+        mae = mean_absolute_error(Y_data, Y_hat_gaussian, multioutput="raw_values")
+        r2 = r2_score(Y_data, Y_hat_gaussian, multioutput="raw_values")
+
+        # Adjusted R^2 per target
+        adjusted_r2 = 1 - (1 - r2) * (n - 1) / (n - p - 1)
+
+        # Residual standard deviation per target
+        residual_std = residuals.std(axis=0, ddof=1)
+
+        # Normalized RMSE relative to empirical std of Y
+        y_std = Y_data.std(axis=0, ddof=1)
+        nrmse = rmse / y_std
+
+        fit_errors = {
+            col: {
+                "RMSE": float(rmse[i]),
+                "MAE": float(mae[i]),
+                "R2": float(r2[i]),
+                "Adjusted_R2": float(adjusted_r2[i]),
+                "Residual_STD": float(residual_std[i]),
+                "Normalized_RMSE": float(nrmse[i])
+            }
+            for i, col in enumerate(y_columns)
+        }
+
+        metrics_df = pd.DataFrame(fit_errors).T
+
+        # ------------------------------------------------------------
+        # 7. Additional diagnostic covariance quantities
+        # ------------------------------------------------------------
+        Y_hat_centered = Y_hat_gaussian - mu_Y
+
+        Cov_Y_Yhat = (Y_centered.T @ Y_hat_centered) / dof
+        Cov_Yhat_Yhat = (Y_hat_centered.T @ Y_hat_centered) / dof
+        Cov_residuals = (residuals.T @ residuals) / dof
+
+        # A useful structural matrix:
+        # How much of the covariance of Y is captured by Y_hat?
+        structural_gain_matrix = np.linalg.pinv(Sigma_YY) @ Cov_Y_Yhat
+
+        # ------------------------------------------------------------
+        # 8. Plots
+        # ------------------------------------------------------------
+        if show_plots:
+
+            # --------------------------------------------------------
+            # Plot 1: Conditional covariance of Y given X
+            # --------------------------------------------------------
+            fig_cond_cov = px.imshow(
+                Sigma_Y_given_X,
+                x=y_columns,
+                y=y_columns,
+                text_auto=".3g",
+                labels={
+                    "x": "Target variables Y",
+                    "y": "Target variables Y",
+                    "color": "Conditional covariance"
+                },
+                title=(
+                    "Conditional Covariance Matrix "
+                    r"$\Sigma_{Y|X}=\Sigma_{YY}-\Sigma_{YX}\Sigma_{XX}^{-1}\Sigma_{XY}$"
+                )
+            )
+            fig_cond_cov.update_xaxes(side="bottom")
+            fig_cond_cov.show()
+
+            # --------------------------------------------------------
+            # Plot 2: Residual covariance matrix
+            # --------------------------------------------------------
+            fig_res_cov = px.imshow(
+                Cov_residuals,
+                x=y_columns,
+                y=y_columns,
+                text_auto=".3g",
+                labels={
+                    "x": "Residual variables",
+                    "y": "Residual variables",
+                    "color": "Residual covariance"
+                },
+                title="Empirical Residual Covariance Matrix"
+            )
+            fig_res_cov.update_xaxes(side="bottom")
+            fig_res_cov.show()
+
+            # --------------------------------------------------------
+            # Plot 3: Observed vs predicted for each target
+            # --------------------------------------------------------
+            for i, col in enumerate(y_columns):
+                observed = Y_data[:, i]
+                predicted = Y_hat_gaussian[:, i]
+
+                min_val = min(observed.min(), predicted.min())
+                max_val = max(observed.max(), predicted.max())
+
+                fig_obs_pred = go.Figure()
+
+                fig_obs_pred.add_trace(
+                    go.Scatter(
+                        x=observed,
+                        y=predicted,
+                        mode="markers",
+                        name="Data"
+                    )
+                )
+
+                fig_obs_pred.add_trace(
+                    go.Scatter(
+                        x=[min_val, max_val],
+                        y=[min_val, max_val],
+                        mode="lines",
+                        name="Ideal: predicted = observed"
+                    )
+                )
+
+                fig_obs_pred.update_layout(
+                    title=(
+                        f"Observed vs Predicted for {col}<br>"
+                        f"RMSE={rmse[i]:.4g}, MAE={mae[i]:.4g}, "
+                        f"R²={r2[i]:.4g}, Adjusted R²={adjusted_r2[i]:.4g}"
+                    ),
+                    xaxis_title=f"Observed {col}",
+                    yaxis_title=f"Predicted E[{col} | X]",
+                    template="plotly_white"
+                )
+
+                fig_obs_pred.show()
+
+            # --------------------------------------------------------
+            # Plot 4: Standardized residuals vs fitted values
+            # --------------------------------------------------------
+            for i, col in enumerate(y_columns):
+                fitted = Y_hat_gaussian[:, i]
+                res = residuals[:, i]
+
+                std = residual_std[i]
+                if np.isclose(std, 0):
+                    std_res = np.zeros_like(res)
+                else:
+                    std_res = res / std
+
+                fig_res = go.Figure()
+
+                fig_res.add_trace(
+                    go.Scatter(
+                        x=fitted,
+                        y=std_res,
+                        mode="markers",
+                        name="Standardized residuals"
+                    )
+                )
+
+                fig_res.add_hline(y=0, line_dash="dash")
+                fig_res.add_hline(y=2, line_dash="dot")
+                fig_res.add_hline(y=-2, line_dash="dot")
+
+                fig_res.update_layout(
+                    title=f"Standardized Residuals vs Fitted Values for {col}",
+                    xaxis_title=f"Fitted value E[{col} | X]",
+                    yaxis_title="Standardized residual",
+                    template="plotly_white"
+                )
+
+                fig_res.show()
+
+            # --------------------------------------------------------
+            # Plot 5: Error metrics summary
+            # --------------------------------------------------------
+            metrics_long = (
+                metrics_df[["RMSE", "MAE", "Normalized_RMSE"]]
+                .reset_index()
+                .rename(columns={"index": "target"})
+                .melt(id_vars="target", var_name="metric", value_name="value")
+            )
+
+            fig_metrics = px.bar(
+                metrics_long,
+                x="target",
+                y="value",
+                color="metric",
+                barmode="group",
+                title="Prediction Error Metrics by Target Variable",
+                labels={
+                    "target": "Target variable",
+                    "value": "Metric value",
+                    "metric": "Metric"
+                }
+            )
+            fig_metrics.show()
+
+            # --------------------------------------------------------
+            # Plot 6: Structural covariance capture matrix
+            # --------------------------------------------------------
+            fig_gain = px.imshow(
+                structural_gain_matrix,
+                x=[f"Predicted {col}" for col in y_columns],
+                y=y_columns,
+                text_auto=".3g",
+                labels={
+                    "x": "Predicted target variables",
+                    "y": "Observed target variables",
+                    "color": "Gain"
+                },
+                title=r"Structural Gain Matrix: $\Sigma_{YY}^{-1}\operatorname{Cov}(Y,\widehat{Y})$"
+            )
+            fig_gain.update_xaxes(side="bottom")
+            fig_gain.show()
+
+        # ------------------------------------------------------------
+        # 9. Return all useful objects
+        # ------------------------------------------------------------
+        return {
+            "mu_X": mu_X,
+            "mu_Y": mu_Y,
+
+            "Sigma_XX": Sigma_XX,
+            "Sigma_XY": Sigma_XY,
+            "Sigma_YX": Sigma_YX,
+            "Sigma_YY": Sigma_YY,
+            "Sigma_Y_given_X": Sigma_Y_given_X,
+
+            "conditional_coefficient_matrix": B_cond,
+            "conditional_intercept": mu_Y - mu_X @ B_cond,
+
+            "Y_hat": Y_hat_gaussian,
+            "Y_hat_sklearn": Y_hat_sklearn,
+            "residuals": residuals,
+
+            "fit_errors": fit_errors,
+            "metrics_dataframe": metrics_df,
+
+            "Cov_Y_Yhat": Cov_Y_Yhat,
+            "Cov_Yhat_Yhat": Cov_Yhat_Yhat,
+            "Cov_residuals": Cov_residuals,
+            "structural_gain_matrix": structural_gain_matrix,
+
+            "sklearn_model_object": reg,
+            "sklearn_coefficients": reg.coef_,
+            "sklearn_intercept": reg.intercept_,
+
+            "max_prediction_difference_between_gaussian_and_sklearn": float(max_prediction_difference),
+
+            "x_features": x_columns,
+            "y_features": y_columns,
+            "n_observations": n
+        }
+
 
     def instantiate_macro_clt_distribution(self, columns: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """
