@@ -1115,7 +1115,7 @@ class DataInspector:
         p = len(x_columns)
         q = len(y_columns)
 
-        if n <= p:
+        if n <= p+1:
             raise ValueError(
                 f"Not enough observations to estimate E[Y|X]. "
                 f"Need more rows than number of X variables. Got n={n}, p={p}."
