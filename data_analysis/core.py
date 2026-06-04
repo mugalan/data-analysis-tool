@@ -1430,7 +1430,6 @@ class DataInspector:
             "n_observations": n
         }
 
-
     def instantiate_macro_clt_distribution(self, columns: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """
         Operationalizes the macro-scale CLT model: mu_hat_n ~ N(mu_hat_n, (1/n) * S).
