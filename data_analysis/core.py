@@ -19,6 +19,15 @@ from sklearn.metrics import (
     mean_absolute_error,
     r2_score
 )
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import (
+    RBF,
+    ConstantKernel,
+    WhiteKernel,
+    Matern,
+    RationalQuadratic,
+    DotProduct
+)
 
 
 class DataInspector:
@@ -1918,6 +1927,427 @@ class DataInspector:
             "sensors": target_cols
         }
                 
+    def compute_and_plot_scalar_gp_regression(
+        self,
+        g_column: str,
+        y_column: str,
+        kernel_type: str = "rbf",
+        n_grid: int = 300,
+        test_fraction: Optional[float] = None,
+        random_state: int = 42,
+        show_plots: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Computes scalar-input, scalar-output Gaussian Process Regression.
+
+        This implements the model
+
+            Y_g = X_g + nu_g,
+
+        where X_g is a latent scalar Gaussian process and nu_g is independent
+        Gaussian measurement noise.
+
+        The method estimates the kernel hyperparameters from data using maximum
+        likelihood through sklearn's GaussianProcessRegressor.
+
+        Args:
+            g_column:
+                Name of the scalar input column. This represents g.
+
+            y_column:
+                Name of the scalar observed output column. This represents Y_g.
+
+            kernel_type:
+                Kernel family to use. Options:
+                    "rbf", "matern", "rational_quadratic", "linear".
+
+            n_grid:
+                Number of grid points for plotting the posterior mean and uncertainty.
+
+            test_fraction:
+                If None, the model is evaluated in-sample.
+                If a float in (0,1), the data are split into train/test sets.
+
+            random_state:
+                Random seed used when test_fraction is not None.
+
+            show_plots:
+                If True, displays Plotly figures.
+
+        Returns:
+            Dictionary containing the fitted GP model, kernel, predictions,
+            uncertainty, residuals, and error metrics.
+        """
+
+        # ------------------------------------------------------------
+        # 1. Data extraction and validation
+        # ------------------------------------------------------------
+        df_clean = self.df[[g_column, y_column]].copy()
+        df_clean = df_clean.apply(pd.to_numeric, errors="coerce").dropna()
+
+        if df_clean.empty:
+            raise ValueError("No valid rows remain after selecting columns and dropping NaNs.")
+
+        df_clean = df_clean.sort_values(g_column)
+
+        g_all = df_clean[g_column].to_numpy(dtype=float).reshape(-1, 1)
+        y_all = df_clean[y_column].to_numpy(dtype=float)
+
+        n = len(df_clean)
+
+        if n < 3:
+            raise ValueError("At least 3 data points are needed for GP regression.")
+
+        # ------------------------------------------------------------
+        # 2. Train/test split if requested
+        # ------------------------------------------------------------
+        if test_fraction is not None:
+            if not (0 < test_fraction < 1):
+                raise ValueError("test_fraction must be None or a float in (0,1).")
+
+            rng = np.random.default_rng(random_state)
+            indices = np.arange(n)
+            rng.shuffle(indices)
+
+            n_test = int(np.ceil(test_fraction * n))
+            test_idx = indices[:n_test]
+            train_idx = indices[n_test:]
+
+            g_train = g_all[train_idx]
+            y_train = y_all[train_idx]
+
+            g_test = g_all[test_idx]
+            y_test = y_all[test_idx]
+
+            # Sort for nicer plotting
+            train_order = np.argsort(g_train[:, 0])
+            test_order = np.argsort(g_test[:, 0])
+
+            g_train = g_train[train_order]
+            y_train = y_train[train_order]
+
+            g_test = g_test[test_order]
+            y_test = y_test[test_order]
+
+        else:
+            g_train = g_all
+            y_train = y_all
+            g_test = g_all
+            y_test = y_all
+
+        # ------------------------------------------------------------
+        # 3. Kernel construction
+        # ------------------------------------------------------------
+        # ConstantKernel controls the overall signal variance.
+        # WhiteKernel estimates measurement noise variance sigma_m^2.
+        if kernel_type == "rbf":
+            kernel = (
+                ConstantKernel(1.0, (1e-3, 1e3))
+                * RBF(length_scale=1.0, length_scale_bounds=(1e-3, 1e3))
+                + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-8, 1e3))
+            )
+
+        elif kernel_type == "matern":
+            kernel = (
+                ConstantKernel(1.0, (1e-3, 1e3))
+                * Matern(length_scale=1.0, length_scale_bounds=(1e-3, 1e3), nu=1.5)
+                + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-8, 1e3))
+            )
+
+        elif kernel_type == "rational_quadratic":
+            kernel = (
+                ConstantKernel(1.0, (1e-3, 1e3))
+                * RationalQuadratic(
+                    length_scale=1.0,
+                    alpha=1.0,
+                    length_scale_bounds=(1e-3, 1e3),
+                    alpha_bounds=(1e-3, 1e3)
+                )
+                + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-8, 1e3))
+            )
+
+        elif kernel_type == "linear":
+            kernel = (
+                ConstantKernel(1.0, (1e-3, 1e3))
+                * DotProduct(sigma_0=1.0, sigma_0_bounds=(1e-8, 1e3))
+                + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-8, 1e3))
+            )
+
+        else:
+            raise ValueError(
+                "kernel_type must be one of: 'rbf', 'matern', "
+                "'rational_quadratic', or 'linear'."
+            )
+
+        # ------------------------------------------------------------
+        # 4. Fit Gaussian Process model
+        # ------------------------------------------------------------
+        gp = GaussianProcessRegressor(
+            kernel=kernel,
+            alpha=0.0,
+            normalize_y=True,
+            n_restarts_optimizer=10,
+            random_state=random_state
+        )
+
+        gp.fit(g_train, y_train)
+
+        # ------------------------------------------------------------
+        # 5. Predictions at observed/test points
+        # ------------------------------------------------------------
+        y_pred, y_std = gp.predict(g_test, return_std=True)
+
+        residuals = y_test - y_pred
+
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+
+        y_std_empirical = np.std(y_test, ddof=1)
+        nrmse = rmse / y_std_empirical if not np.isclose(y_std_empirical, 0) else np.nan
+
+        fit_errors = {
+            "RMSE": float(rmse),
+            "MAE": float(mae),
+            "R2": float(r2),
+            "Normalized_RMSE": float(nrmse),
+            "Residual_STD": float(np.std(residuals, ddof=1))
+        }
+
+        # ------------------------------------------------------------
+        # 6. Smooth grid posterior for plotting
+        # ------------------------------------------------------------
+        g_min = float(g_all.min())
+        g_max = float(g_all.max())
+
+        padding = 0.05 * (g_max - g_min) if g_max > g_min else 1.0
+
+        g_grid = np.linspace(g_min - padding, g_max + padding, n_grid).reshape(-1, 1)
+
+        y_grid_mean, y_grid_std = gp.predict(g_grid, return_std=True)
+
+        upper_2std = y_grid_mean + 2.0 * y_grid_std
+        lower_2std = y_grid_mean - 2.0 * y_grid_std
+
+        upper_1std = y_grid_mean + y_grid_std
+        lower_1std = y_grid_mean - y_grid_std
+
+        # ------------------------------------------------------------
+        # 7. Kernel matrices corresponding to the theory
+        # ------------------------------------------------------------
+        # This is the learned covariance matrix for the latent/noisy model.
+        K_train = gp.kernel_(g_train)
+
+        # Useful theoretical quantities:
+        # Since sklearn includes the WhiteKernel in gp.kernel_,
+        # K_train includes estimated observation noise on the diagonal.
+        log_marginal_likelihood = gp.log_marginal_likelihood(gp.kernel_.theta)
+
+        # ------------------------------------------------------------
+        # 8. Plots
+        # ------------------------------------------------------------
+        if show_plots:
+
+            # --------------------------------------------------------
+            # Plot 1: GP posterior mean and uncertainty band
+            # --------------------------------------------------------
+            fig_gp = go.Figure()
+
+            fig_gp.add_trace(
+                go.Scatter(
+                    x=g_grid[:, 0],
+                    y=upper_2std,
+                    mode="lines",
+                    line=dict(width=0),
+                    showlegend=False,
+                    name="Upper 2 std"
+                )
+            )
+
+            fig_gp.add_trace(
+                go.Scatter(
+                    x=g_grid[:, 0],
+                    y=lower_2std,
+                    mode="lines",
+                    fill="tonexty",
+                    line=dict(width=0),
+                    name="95% uncertainty band"
+                )
+            )
+
+            fig_gp.add_trace(
+                go.Scatter(
+                    x=g_grid[:, 0],
+                    y=y_grid_mean,
+                    mode="lines",
+                    name=r"Posterior mean E[X_g | Y]"
+                )
+            )
+
+            fig_gp.add_trace(
+                go.Scatter(
+                    x=g_train[:, 0],
+                    y=y_train,
+                    mode="markers",
+                    name="Training observations"
+                )
+            )
+
+            if test_fraction is not None:
+                fig_gp.add_trace(
+                    go.Scatter(
+                        x=g_test[:, 0],
+                        y=y_test,
+                        mode="markers",
+                        name="Test observations"
+                    )
+                )
+
+            fig_gp.update_layout(
+                title=(
+                    f"Gaussian Process Regression for {y_column} as a function of {g_column}"
+                    f"<br>Kernel: {gp.kernel_}"
+                ),
+                xaxis_title=g_column,
+                yaxis_title=y_column,
+                template="plotly_white"
+            )
+
+            fig_gp.show()
+
+            # --------------------------------------------------------
+            # Plot 2: Observed vs predicted
+            # --------------------------------------------------------
+            min_val = float(min(y_test.min(), y_pred.min()))
+            max_val = float(max(y_test.max(), y_pred.max()))
+
+            fig_obs_pred = go.Figure()
+
+            fig_obs_pred.add_trace(
+                go.Scatter(
+                    x=y_test,
+                    y=y_pred,
+                    mode="markers",
+                    name="Predictions"
+                )
+            )
+
+            fig_obs_pred.add_trace(
+                go.Scatter(
+                    x=[min_val, max_val],
+                    y=[min_val, max_val],
+                    mode="lines",
+                    name="Ideal: predicted = observed"
+                )
+            )
+
+            fig_obs_pred.update_layout(
+                title=(
+                    f"Observed vs Predicted for {y_column}<br>"
+                    f"RMSE={rmse:.4g}, MAE={mae:.4g}, R²={r2:.4g}"
+                ),
+                xaxis_title="Observed values",
+                yaxis_title="Predicted posterior mean",
+                template="plotly_white"
+            )
+
+            fig_obs_pred.show()
+
+            # --------------------------------------------------------
+            # Plot 3: Residuals vs fitted values
+            # --------------------------------------------------------
+            residual_std = np.std(residuals, ddof=1)
+
+            if np.isclose(residual_std, 0):
+                standardized_residuals = np.zeros_like(residuals)
+            else:
+                standardized_residuals = residuals / residual_std
+
+            fig_res = go.Figure()
+
+            fig_res.add_trace(
+                go.Scatter(
+                    x=y_pred,
+                    y=standardized_residuals,
+                    mode="markers",
+                    name="Standardized residuals"
+                )
+            )
+
+            fig_res.add_hline(y=0, line_dash="dash")
+            fig_res.add_hline(y=2, line_dash="dot")
+            fig_res.add_hline(y=-2, line_dash="dot")
+
+            fig_res.update_layout(
+                title=f"Standardized Residuals vs Fitted Values for {y_column}",
+                xaxis_title="Fitted posterior mean",
+                yaxis_title="Standardized residual",
+                template="plotly_white"
+            )
+
+            fig_res.show()
+
+            # --------------------------------------------------------
+            # Plot 4: Predictive standard deviation over g
+            # --------------------------------------------------------
+            fig_std = go.Figure()
+
+            fig_std.add_trace(
+                go.Scatter(
+                    x=g_grid[:, 0],
+                    y=y_grid_std,
+                    mode="lines",
+                    name="Posterior standard deviation"
+                )
+            )
+
+            fig_std.update_layout(
+                title=f"Posterior Uncertainty for {y_column}",
+                xaxis_title=g_column,
+                yaxis_title="Posterior standard deviation",
+                template="plotly_white"
+            )
+
+            fig_std.show()
+
+        # ------------------------------------------------------------
+        # 9. Return results
+        # ------------------------------------------------------------
+        return {
+            "g_column": g_column,
+            "y_column": y_column,
+
+            "g_train": g_train,
+            "y_train": y_train,
+            "g_test": g_test,
+            "y_test": y_test,
+
+            "g_grid": g_grid,
+            "posterior_mean_grid": y_grid_mean,
+            "posterior_std_grid": y_grid_std,
+            "posterior_upper_1std_grid": upper_1std,
+            "posterior_lower_1std_grid": lower_1std,
+            "posterior_upper_2std_grid": upper_2std,
+            "posterior_lower_2std_grid": lower_2std,
+
+            "y_pred": y_pred,
+            "y_pred_std": y_std,
+            "residuals": residuals,
+
+            "fit_errors": fit_errors,
+
+            "kernel_initial": kernel,
+            "kernel_learned": gp.kernel_,
+            "K_train_with_noise": K_train,
+            "log_marginal_likelihood": float(log_marginal_likelihood),
+
+            "gp_model_object": gp,
+            "n_observations": n,
+            "test_fraction": test_fraction
+        }
+
+
+
 import time
 from datetime import datetime
 import uuid
